@@ -8,6 +8,7 @@ struct PopoverView: View {
     @State private var isHoveringToggle = false
     @State private var isHoveringQuit = false
     @State private var pulseAnimation = false
+    @AppStorage("ShowStatusNotifications") private var showNotifications = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,9 +55,6 @@ struct PopoverView: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 260)
-        .onAppear {
-            displayManager.refreshDisplayInfo()
-        }
     }
 
     // MARK: - Header
@@ -156,6 +154,26 @@ struct PopoverView: View {
                 }
             }
             .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+            
+            Divider()
+                .padding(.vertical, 2)
+            
+            Toggle(isOn: $showNotifications) {
+                HStack(spacing: 8) {
+                    Image(systemName: "bell.badge")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Status Notifications")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("Show toast messages on change")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
         }
         .padding(10)
         .background(
@@ -243,7 +261,7 @@ struct PopoverView: View {
 
     private var footerView: some View {
         HStack {
-            Text("v1.0")
+            Text("v1.00.01")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary.opacity(0.5))
 

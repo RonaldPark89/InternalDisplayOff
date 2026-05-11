@@ -1,12 +1,14 @@
 import Cocoa
 import SwiftUI
 import Carbon
+import Combine
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private let displayManager = DisplayManager.shared
     private var displayObserver: NSObjectProtocol?
+    private var cancellables = Set<AnyCancellable>()
 
     // MARK: - App Lifecycle
 
@@ -67,9 +69,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // Safety: always re-enable the internal display when the app quits
-        if displayManager.isInternalDisplayOff {
-            displayManager.enableInternalDisplay()
-        }
+        print("Application terminating: Unconditionally forcing internal display to enable...")
+        displayManager.forceEnableFromBackup()
     }
 
     // MARK: - Status Bar Setup
@@ -113,8 +114,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.displayManager.refreshDisplayInfo()
-            self?.updateStatusIcon()
         }
+        
+        // Reactively update the icon whenever the DisplayManager state changes
+        displayManager.$isInternalDisplayOff
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.updateStatusIcon()
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Status Icon

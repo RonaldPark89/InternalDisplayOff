@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		529916292FB16DA4000C53D8 /* ToastManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 529916282FB16DA4000C53D8 /* ToastManager.swift */; };
 		AA00000000000000000001 /* InternalDisplayOffApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000001 /* InternalDisplayOffApp.swift */; };
 		AA00000000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000002 /* AppDelegate.swift */; };
 		AA00000000000000000003 /* DisplayManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000003 /* DisplayManager.swift */; };
@@ -16,6 +17,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		529916282FB16DA4000C53D8 /* ToastManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastManager.swift; sourceTree = "<group>"; };
 		AB00000000000000000001 /* InternalDisplayOffApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InternalDisplayOffApp.swift; sourceTree = "<group>"; };
 		AB00000000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		AB00000000000000000003 /* DisplayManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayManager.swift; sourceTree = "<group>"; };
@@ -49,6 +51,7 @@
 		AC00000000000000000002 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				529916282FB16DA4000C53D8 /* ToastManager.swift */,
 				AB00000000000000000001 /* InternalDisplayOffApp.swift */,
 				AB00000000000000000002 /* AppDelegate.swift */,
 				AB00000000000000000003 /* DisplayManager.swift */,
@@ -142,6 +145,7 @@
 				AA00000000000000000001 /* InternalDisplayOffApp.swift in Sources */,
 				AA00000000000000000002 /* AppDelegate.swift in Sources */,
 				AA00000000000000000003 /* DisplayManager.swift in Sources */,
+				529916292FB16DA4000C53D8 /* ToastManager.swift in Sources */,
 				AA00000000000000000004 /* PopoverView.swift in Sources */,
 				AA00000000000000000008 /* LaunchManager.swift in Sources */,
 			);
