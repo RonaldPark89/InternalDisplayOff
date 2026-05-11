@@ -38,6 +38,7 @@ swiftc \
     -O \
     -parse-as-library \
     Sources/DisplayManager.swift \
+    Sources/LaunchManager.swift \
     Sources/PopoverView.swift \
     Sources/AppDelegate.swift \
     Sources/InternalDisplayOffApp.swift
