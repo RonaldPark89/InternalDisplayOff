@@ -209,6 +209,12 @@ class DisplayManager: ObservableObject {
         
         DispatchQueue.main.async {
             self.externalDisplayCount = validExternals
+            
+            // Clear the "no external display" error if one is now connected
+            if self.externalDisplayCount > 0 && self.lastError == "No external display detected." {
+                self.lastError = nil
+            }
+            
             if let internalID = foundInternal {
                 self.cachedInternalDisplayID = internalID
                 UserDefaults.standard.set(Int(internalID), forKey: "BackupInternalDisplayID")

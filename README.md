@@ -20,6 +20,15 @@ macOS clamshell mode requires closing the lid, which disables the keyboard and s
 - **Smart detection** — won't disable the internal display unless an external display is connected
 - **Display monitoring** — detects when displays are connected/disconnected
 
+## Changelog
+
+### v1.00.01
+- **Robust Auto-Recovery:** The internal display now automatically and reliably turns back on when all external monitors are disconnected, bypassing macOS WindowServer sleep states and correctly filtering out virtual "ghost" displays.
+- **HUD Toast Notifications:** Added sleek, unobtrusive floating toast messages to notify you when the internal display state changes (can be toggled in settings).
+- **Reactive UI:** The menu bar icon now instantly and accurately reflects the display state using Combine, fixing occasional desync issues.
+- **Hot-plug Stability:** Fixed a bug where rapidly plugging and unplugging external monitors caused duplicate ghost monitors to be counted.
+- **Enhanced Backup System:** The internal display ID is now persistently backed up to both UserDefaults and a local hidden file (`~/.internal_display_backup_id`), ensuring recovery is always possible even across reboots or app crashes.
+
 ## How It Works
 
 Uses private CoreGraphics APIs (`CGSConfigureDisplayEnabled`) to programmatically disable/enable the built-in display at the system level. This is the same mechanism used by professional display management tools.
