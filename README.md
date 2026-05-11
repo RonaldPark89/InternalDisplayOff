@@ -2,6 +2,8 @@
 
 A lightweight macOS menubar app that **disables/enables your MacBook's internal display** — giving you clamshell-mode benefits while keeping your keyboard, trackpad, and speakers fully functional.
 
+> Vibe coded with [Claude Code](https://claude.ai/code)
+
 ## Why?
 
 macOS clamshell mode requires closing the lid, which disables the keyboard and speakers. This app lets you turn off just the built-in screen so you can:
@@ -19,20 +21,12 @@ macOS clamshell mode requires closing the lid, which disables the keyboard and s
 - **Safety first** — automatically re-enables the internal display when the app quits
 - **Smart detection** — won't disable the internal display unless an external display is connected
 - **Display monitoring** — detects when displays are connected/disconnected
-
-## Changelog
-
-### v1.00.01
-- **Robust Auto-Recovery:** The internal display now automatically and reliably turns back on when all external monitors are disconnected, bypassing macOS WindowServer sleep states and correctly filtering out virtual "ghost" displays.
-- **HUD Toast Notifications:** Added sleek, unobtrusive floating toast messages to notify you when the internal display state changes (can be toggled in settings).
-- **Reactive UI:** The menu bar icon now instantly and accurately reflects the display state using Combine, fixing occasional desync issues.
-- **Hot-plug Stability:** Fixed a bug where rapidly plugging and unplugging external monitors caused duplicate ghost monitors to be counted.
-- **Enhanced Backup System:** The internal display ID is now persistently backed up to both UserDefaults and a local hidden file (`~/.internal_display_backup_id`), ensuring recovery is always possible even across reboots or app crashes.
+- **Launch at Login** — optional auto-start on login
+- **Toast notifications** — unobtrusive HUD messages on display state changes (togglable)
 
 ## How It Works
 
 Uses private CoreGraphics APIs (`CGSConfigureDisplayEnabled`) to programmatically disable/enable the built-in display at the system level. This is the same mechanism used by professional display management tools.
-![image](https://private-user-images.githubusercontent.com/2907720/589612799-aa7e0871-cc38-428e-96d1-2deb142de301.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NzgyNTEyMzYsIm5iZiI6MTc3ODI1MDkzNiwicGF0aCI6Ii8yOTA3NzIwLzU4OTYxMjc5OS1hYTdlMDg3MS1jYzM4LTQyOGUtOTZkMS0yZGViMTQyZGUzMDEucG5nP1gtQW16LUFsZ29yaXRobT1BV1M0LUhNQUMtU0hBMjU2JlgtQW16LUNyZWRlbnRpYWw9QUtJQVZDT0RZTFNBNTNQUUs0WkElMkYyMDI2MDUwOCUyRnVzLWVhc3QtMSUyRnMzJTJGYXdzNF9yZXF1ZXN0JlgtQW16LURhdGU9MjAyNjA1MDhUMTQzNTM2WiZYLUFtei1FeHBpcmVzPTMwMCZYLUFtei1TaWduYXR1cmU9YWM4OTM2ZDM1OThjODUxYzZkZGVjYjlkZWZkODY1MmNhMDgxYTgzZjE4MTliMTdkN2MwNWVmMDgyOTY5YjIyNSZYLUFtei1TaWduZWRIZWFkZXJzPWhvc3QmcmVzcG9uc2UtY29udGVudC10eXBlPWltYWdlJTJGcG5nIn0.XZFE1_O8W9QuSuLiZn5TbjQIKV7KsduZQ0iiCjtxYPw)
 
 ## Build
 
@@ -75,5 +69,26 @@ You may need to grant **Accessibility** permissions for the global keyboard shor
 ## Technical Notes
 
 - Uses `CGSConfigureDisplayEnabled` (private API) — not App Store compatible, but works great for personal use
-- The internal display ID is cached on launch so it can be re-enabled even after being disabled
-- Uses `CGSGetOnlineDisplayList` to detect displays (includes disabled ones)
+- The internal display ID is cached on launch and backed up to `~/.internal_display_backup_id` so it can be restored even after being disabled or across reboots
+- Uses `CGGetOnlineDisplayList` to detect displays (includes disabled ones)
+- To update the displayed version, edit `CFBundleShortVersionString` in `Resources/Info.plist`
+
+## Changelog
+
+### v1.00.02
+- **Bug fixes & thread safety:** Fixed a data race where the fallback timer read display state off the main thread; emergency hardware check now correctly executes on the main thread.
+- **Consistent settings UI:** Toggle switches for Launch at Login and Status Notifications are now always aligned to the right side, matching system conventions.
+- **Popover positioning fix:** Removed hardcoded `contentSize` in favour of `sizingOptions = .preferredContentSize`, fixing the popover rendering at the wrong position on screen.
+- **WindowServer error fix:** Removed `NSApp.activate(ignoringOtherApps:)` call that was causing `FBSWorkspaceScenesClient` / scene invalidation errors in the system log.
+- **Proper cleanup on quit:** Carbon hotkey and display reconfiguration callback are now correctly unregistered on app termination.
+- **Login item sync:** Launch at Login toggle now re-syncs with the real system state each time the popover opens.
+- **Logging:** Replaced `print()` throughout with `OSLog` / `Logger` for filterable, level-aware logging.
+- **Dynamic version string:** Version number now reads from `Info.plist` — update `CFBundleShortVersionString` to change what the popover displays.
+- **Build script:** Explicitly links Carbon, ServiceManagement, and Combine frameworks.
+
+### v1.00.01
+- **Robust Auto-Recovery:** The internal display now automatically and reliably turns back on when all external monitors are disconnected, bypassing macOS WindowServer sleep states and correctly filtering out virtual "ghost" displays.
+- **HUD Toast Notifications:** Added sleek, unobtrusive floating toast messages to notify you when the internal display state changes (can be toggled in settings).
+- **Reactive UI:** The menu bar icon now instantly and accurately reflects the display state using Combine, fixing occasional desync issues.
+- **Hot-plug Stability:** Fixed a bug where rapidly plugging and unplugging external monitors caused duplicate ghost monitors to be counted.
+- **Enhanced Backup System:** The internal display ID is now persistently backed up to both UserDefaults and a local hidden file (`~/.internal_display_backup_id`), ensuring recovery is always possible even across reboots or app crashes.

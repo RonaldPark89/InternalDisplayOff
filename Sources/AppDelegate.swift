@@ -2,17 +2,19 @@ import Cocoa
 import SwiftUI
 import Carbon
 import Combine
+import OSLog
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private let displayManager = DisplayManager.shared
-    private var displayObserver: NSObjectProtocol?
     private var cancellables = Set<AnyCancellable>()
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "InternalDisplayOff", category: "AppDelegate")
 
     // MARK: - App Lifecycle
 
     private var hotKeyRef: EventHotKeyRef?
+    private var carbonEventHandlerRef: EventHandlerRef?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -32,19 +34,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupGlobalHotKey() {
-        // Use a 4-character code literal for 'IDOf' to avoid deprecated UTGetOSTypeFromString
         let hotKeyID = EventHotKeyID(signature: 0x49444f66, id: 1)
-        var eventHandler: EventHandlerRef?
-        
+
         let eventSpec = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         ]
 
-        // Define the handler function
+        // Handler function
         let handler: EventHandlerUPP = { (nextHandler, theEvent, userData) -> OSStatus in
-            // When shortcut is pressed
             DispatchQueue.main.async {
-                print(">>> Carbon HotKey Triggered! <<<")
                 DisplayManager.shared.toggleInternalDisplay()
                 if let appDelegate = NSApp.delegate as? AppDelegate {
                     appDelegate.updateStatusIcon()
@@ -53,24 +51,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return noErr
         }
 
-        InstallEventHandler(GetApplicationEventTarget(), handler, 1, eventSpec, nil, &eventHandler)
-        
+        InstallEventHandler(GetApplicationEventTarget(), handler, 1, eventSpec, nil, &carbonEventHandlerRef)
+
         // Register Ctrl (0x1000) + Cmd (0x0100) + D (keyCode 2)
-        // cmdKey = 0x0100, controlKey = 0x1000
         let modifiers = UInt32(cmdKey | controlKey)
         let result = RegisterEventHotKey(UInt32(2), modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
-        
+
         if result == noErr {
-            print("Successfully registered Carbon HotKey: Ctrl+Cmd+D")
+            logger.info("Registered global hotkey: ⌃⌘D")
         } else {
-            print("Failed to register Carbon HotKey: \(result)")
+            logger.error("Failed to register global hotkey: \(result)")
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Safety: always re-enable the internal display when the app quits
-        print("Application terminating: Unconditionally forcing internal display to enable...")
+        logger.info("Application terminating: forcing internal display to enable.")
         displayManager.forceEnableFromBackup()
+        displayManager.cleanup()
+        if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
+        if let ref = carbonEventHandlerRef { RemoveEventHandler(ref) }
     }
 
     // MARK: - Status Bar Setup
@@ -90,7 +89,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupPopover() {
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 300, height: 280)
         popover.behavior = .transient
         popover.animates = true
 
@@ -101,7 +99,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
 
-        popover.contentViewController = NSHostingController(rootView: contentView)
+        let hostingController = NSHostingController(rootView: contentView)
+        hostingController.sizingOptions = .preferredContentSize
+        popover.contentViewController = hostingController
     }
 
     // MARK: - Display Change Observer
@@ -194,9 +194,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func showPopover() {
         if let button = statusItem.button {
             displayManager.refreshDisplayInfo()
+            LaunchManager.shared.refreshStatus()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            // Bring popover to front
-            NSApp.activate(ignoringOtherApps: true)
         }
     }
 

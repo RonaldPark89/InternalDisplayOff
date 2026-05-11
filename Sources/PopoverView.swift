@@ -137,49 +137,51 @@ struct PopoverView: View {
     // MARK: - Settings Section
 
     private var settingsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle(isOn: $launchManager.isLaunchAtLoginEnabled) {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.right.to.line.alt")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                    
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Launch at Login")
-                            .font(.system(size: 12, weight: .medium))
-                        Text("Start app automatically")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
-            
+        VStack(spacing: 8) {
+            settingsRow(
+                icon: "arrow.right.to.line.alt",
+                title: "Launch at Login",
+                subtitle: "Start app automatically",
+                isOn: $launchManager.isLaunchAtLoginEnabled
+            )
+
             Divider()
                 .padding(.vertical, 2)
-            
-            Toggle(isOn: $showNotifications) {
-                HStack(spacing: 8) {
-                    Image(systemName: "bell.badge")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                    
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Status Notifications")
-                            .font(.system(size: 12, weight: .medium))
-                        Text("Show toast messages on change")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+
+            settingsRow(
+                icon: "bell.badge",
+                title: "Status Notifications",
+                subtitle: "Show toast messages on change",
+                isOn: $showNotifications
+            )
         }
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.primary.opacity(0.03))
         )
+    }
+
+    private func settingsRow(icon: String, title: String, subtitle: String, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                Text(subtitle)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+        }
     }
 
     // MARK: - Error View
@@ -260,40 +262,41 @@ struct PopoverView: View {
     // MARK: - Footer
 
     private var footerView: some View {
-        HStack {
-            Text("v1.00.01")
-                .font(.system(size: 10))
-                .foregroundColor(.secondary.opacity(0.5))
+        VStack(spacing: 6) {
+            HStack {
+                Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary.opacity(0.5))
 
-            Spacer()
+                Spacer()
 
-            Button(action: {
-                // Re-enable display before quitting for safety
-                if displayManager.isInternalDisplayOff {
-                    displayManager.enableInternalDisplay()
+                Button(action: onQuit) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "power")
+                            .font(.system(size: 9))
+                        Text("Quit")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(isHoveringQuit ? Color.primary.opacity(0.08) : Color.clear)
+                    )
                 }
-                onQuit()
-            }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "power")
-                        .font(.system(size: 9))
-                    Text("Quit")
-                        .font(.system(size: 11))
-                }
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(isHoveringQuit ? Color.primary.opacity(0.08) : Color.clear)
-                )
-            }
-            .buttonStyle(.plain)
-            .onHover { hovering in
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    isHoveringQuit = hovering
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isHoveringQuit = hovering
+                    }
                 }
             }
+
+            Text("Vibe coded with Claude Code and Gemini")
+                .font(.system(size: 9))
+                .foregroundColor(.secondary.opacity(0.35))
+                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 }

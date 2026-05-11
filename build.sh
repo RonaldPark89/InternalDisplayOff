@@ -35,6 +35,9 @@ swiftc \
     -framework Cocoa \
     -framework CoreGraphics \
     -framework SwiftUI \
+    -framework Carbon \
+    -framework ServiceManagement \
+    -framework Combine \
     -O \
     -parse-as-library \
     Sources/DisplayManager.swift \
