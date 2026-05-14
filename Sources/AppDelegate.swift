@@ -99,6 +99,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
+            // Close any open popover before the screen layout changes: a stale anchor
+            // position causes the popover to appear at wrong coordinates and breaks
+            // the transient auto-dismiss (clicks don't land on the popover's new window).
+            self?.closePopover()
             self?.displayManager.refreshDisplayInfo()
         }
 
@@ -182,10 +186,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showPopover() {
-        if let button = statusItem.button {
-            displayManager.refreshDisplayInfo()
-            LaunchManager.shared.refreshStatus()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        guard let button = statusItem.button else { return }
+        displayManager.refreshDisplayInfo()
+        LaunchManager.shared.refreshStatus()
+        // One-tick defer so the status bar window's frame settles after any
+        // display reconfiguration or drag in System Preferences → Arrange.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.popover.isShown else { return }
+            self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
 

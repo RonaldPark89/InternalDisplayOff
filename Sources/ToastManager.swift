@@ -55,7 +55,14 @@ class ToastManager {
         
         panel.contentView = visualEffect
         
-        if let screen = NSScreen.main {
+        // Prefer the screen under the cursor — it's always on an active display
+        // and updates immediately after reconfiguration. NSScreen.main can briefly
+        // point to a display that was just disabled, placing the toast off-screen.
+        let mouseLocation = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: {
+            NSMouseInRect(mouseLocation, $0.frame, false)
+        }) ?? NSScreen.main
+        if let screen = screen {
             let screenFrame = screen.visibleFrame
             let panelFrame = panel.frame
             let x = screenFrame.midX - panelFrame.width / 2

@@ -32,10 +32,15 @@ class SceneManager: ObservableObject {
             .sorted { $0.physicalSizeInches > $1.physicalSizeInches }
         let internalKey = displays.first(where: { $0.isBuiltin }).map { String($0.id) }
 
-        for external in externals {
-            let label = external.physicalSizeInches > 0
+        for (index, external) in externals.enumerated() {
+            let sizeLabel = external.physicalSizeInches > 0
                 ? "\(Int(external.physicalSizeInches.rounded()))\""
                 : external.name
+            // If two or more externals share the same size, disambiguate with a number.
+            let sameSize = externals.filter {
+                Int($0.physicalSizeInches.rounded()) == Int(external.physicalSizeInches.rounded())
+            }.count
+            let label = sameSize > 1 ? "\(sizeLabel) (\(index + 1))" : sizeLabel
             var state = Dictionary(uniqueKeysWithValues: displays.map { (String($0.id), false) })
             state[String(external.id)] = true
             scenes.append(DisplayScene(

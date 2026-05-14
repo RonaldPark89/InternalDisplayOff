@@ -2,7 +2,7 @@
 
 A lightweight macOS menubar app that **disables/enables your MacBook's internal display** — giving you clamshell-mode benefits while keeping your keyboard, trackpad, and speakers fully functional.
 
-> Vibe coded with [Claude Code](https://claude.ai/code) and Antigravity Gemini
+> Vibe coded with [Claude Code](https://claude.ai/code)
 
 ## Why?
 

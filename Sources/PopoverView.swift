@@ -11,6 +11,10 @@ struct PopoverView: View {
     @State private var pulseAnimation = false
     @AppStorage("ShowStatusNotifications") private var showNotifications = true
 
+    // Draft state: user toggles monitors here before hitting Apply.
+    // nil entry means "no override — use the display's actual current state."
+    @State private var draftEnabled: [CGDirectDisplayID: Bool] = [:]
+
     private var displays: [DisplayState] { displayManager.displays }
     private var onCount: Int { displays.filter(\.isEnabled).count }
 
@@ -18,6 +22,26 @@ struct PopoverView: View {
     private var activeScene: DisplayScene? { sceneManager.matchedScene(displays: displays, among: allScenes) }
     private var canSaveScene: Bool {
         activeScene == nil && displays.count > 1 && onCount < displays.count
+    }
+
+    // MARK: - Draft helpers
+
+    private func isDraftOn(_ id: CGDirectDisplayID) -> Bool {
+        draftEnabled[id] ?? (displays.first(where: { $0.id == id })?.isEnabled ?? false)
+    }
+    private var draftOnCount: Int { displays.filter { isDraftOn($0.id) }.count }
+    private var isDirty: Bool {
+        displays.contains { draftEnabled[$0.id] != nil && draftEnabled[$0.id] != $0.isEnabled }
+    }
+    private func toggleDraft(_ id: CGDirectDisplayID) {
+        let on = isDraftOn(id)
+        guard !on || draftOnCount > 1 else { return }
+        draftEnabled[id] = !on
+    }
+    private func resetDraft() { draftEnabled.removeAll() }
+    private func applyDraft() {
+        let state = Dictionary(uniqueKeysWithValues: displays.map { (String($0.id), isDraftOn($0.id)) })
+        displayManager.applySceneState(state, sceneName: "Custom")
     }
 
     var body: some View {
@@ -46,6 +70,7 @@ struct PopoverView: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 380)
+        .onAppear { resetDraft() }
     }
 
     // MARK: - Header
@@ -64,7 +89,7 @@ struct PopoverView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Displays")
                     .font(.system(size: 13, weight: .semibold))
-                Text(activeScene != nil ? activeScene!.name : "Tap a display to make it the only one on")
+                Text(activeScene != nil ? activeScene!.name : "Tap to toggle on/off · Apply to confirm")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -135,19 +160,24 @@ struct PopoverView: View {
                     // Display thumbnails
                     ForEach(displays) { display in
                         let rect = thumbnailRect(for: display, containerSize: geo.size)
-                        DisplayThumbnail(display: display, isSolo: display.isEnabled && onCount == 1)
-                            .frame(width: rect.width, height: rect.height)
-                            .position(x: rect.midX, y: rect.midY)
-                            .onTapGesture {
-                                if NSEvent.modifierFlags.contains(.shift) {
-                                    displayManager.toggle(display.id)
-                                } else if onCount == 1 && display.isEnabled {
-                                    displayManager.enableAll()
-                                } else {
-                                    displayManager.solo(display.id)
-                                }
+                        let draftOn = isDraftOn(display.id)
+                        let willChange = draftEnabled[display.id] != nil
+                            && draftEnabled[display.id] != display.isEnabled
+                        DisplayThumbnail(
+                            display: display,
+                            draftOn: draftOn,
+                            willChange: willChange,
+                            isSolo: draftOn && draftOnCount == 1
+                        )
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                toggleDraft(display.id)
                             }
-                            .animation(.easeInOut(duration: 0.22), value: display.isEnabled)
+                        }
+                        .animation(.easeInOut(duration: 0.22), value: draftOn)
+                        .animation(.easeInOut(duration: 0.22), value: willChange)
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -158,10 +188,27 @@ struct PopoverView: View {
             }
             .frame(height: 170)
 
-            Text("Tap to solo · Shift-click to toggle individual")
-                .font(.system(size: 10))
-                .foregroundColor(.secondary.opacity(0.5))
-                .frame(maxWidth: .infinity, alignment: .center)
+            Group {
+                if isDirty {
+                    HStack(spacing: 8) {
+                        Button("Reset") {
+                            withAnimation(.easeInOut(duration: 0.15)) { resetDraft() }
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .frame(maxWidth: .infinity)
+
+                        Button("Apply") { applyDraft() }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .frame(maxWidth: .infinity)
+                    }
+                } else {
+                    Text("Tap to toggle on/off · Apply to confirm")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary.opacity(0.5))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
+            .animation(.easeInOut(duration: 0.18), value: isDirty)
         }
         .padding(16)
         .padding(.bottom, 0)
@@ -325,7 +372,7 @@ struct PopoverView: View {
                 .font(.system(size: 10))
                 .foregroundColor(.secondary.opacity(0.5))
             Spacer()
-            Text("Vibe coded with Claude Code and Gemini")
+            Text("Vibe coded with Claude Code")
                 .font(.system(size: 9))
                 .foregroundColor(.secondary.opacity(0.35))
             Spacer()
@@ -383,21 +430,19 @@ struct PopoverView: View {
 
 private struct DisplayThumbnail: View {
     let display: DisplayState
-    let isSolo: Bool
+    let draftOn: Bool       // draft (intended) state — may differ from display.isEnabled
+    let willChange: Bool    // draftOn differs from current display.isEnabled
+    let isSolo: Bool        // draft results in exactly one display on
 
     var body: some View {
         ZStack {
-            // Outer frame
+            // Outer frame + border
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color.black.opacity(0.5))
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.white.opacity(isSolo ? 0 : 0.08), lineWidth: 1)
-                )
-                .overlay(
-                    isSolo ? RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.accentColor, lineWidth: 2)
-                        .shadow(color: Color.accentColor.opacity(0.3), radius: 6) : nil
+                        .stroke(borderColor, lineWidth: borderWidth)
+                        .shadow(color: borderShadow, radius: 6)
                 )
 
             // Inner screen area
@@ -405,55 +450,90 @@ private struct DisplayThumbnail: View {
                 .fill(screenFill)
                 .padding(3)
                 .overlay(
-                    VStack(spacing: 1) {
-                        Text(display.sizeLabel)
-                            .font(.system(size: 9, design: .monospaced))
-                        Text(display.isEnabled ? (display.isBuiltin ? "built-in" : "on") : "OFF")
-                            .font(.system(size: 7))
-                            .opacity(0.7)
+                    VStack(spacing: 2) {
+                        Text(display.name)
+                            .font(.system(size: 7, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text(statusLabel)
+                            .font(.system(size: 8, weight: .semibold))
                     }
-                    .foregroundColor(display.isEnabled ? .white : .white.opacity(0.3))
+                    .foregroundColor(draftOn ? .white : .white.opacity(0.3))
                     .padding(3)
                 )
         }
-        .opacity(display.isEnabled ? 1.0 : 0.45)
-        .animation(.easeInOut(duration: 0.22), value: display.isEnabled)
+        .opacity(draftOn ? 1.0 : (willChange ? 0.65 : 0.45))
+        .animation(.easeInOut(duration: 0.22), value: draftOn)
+        .animation(.easeInOut(duration: 0.22), value: willChange)
         .animation(.easeInOut(duration: 0.22), value: isSolo)
     }
 
+    // Label reflects the draft (intended) state, with an arrow when changing
+    private var statusLabel: String {
+        if willChange { return draftOn ? "→ ON" : "→ OFF" }
+        return draftOn ? (display.isBuiltin ? "built-in" : "on") : "OFF"
+    }
+
+    private var borderColor: Color {
+        if willChange { return draftOn ? .teal : .orange }
+        if isSolo { return .accentColor }
+        return .white.opacity(0.08)
+    }
+    private var borderWidth: CGFloat { (willChange || isSolo) ? 2 : 1 }
+    private var borderShadow: Color {
+        if willChange && draftOn { return .teal.opacity(0.35) }
+        if isSolo { return .accentColor.opacity(0.3) }
+        return .clear
+    }
+
     private var screenFill: some ShapeStyle {
-        if !display.isEnabled {
-            return AnyShapeStyle(Color(white: 0.08))
+        // Will be turned OFF (currently on, draft off)
+        if !draftOn && willChange {
+            return AnyShapeStyle(LinearGradient(
+                stops: [
+                    .init(color: Color.orange.opacity(0.55), location: 0),
+                    .init(color: Color.orange.opacity(0.55), location: 0.5),
+                    .init(color: Color.orange.opacity(0.35), location: 0.5),
+                    .init(color: Color.orange.opacity(0.35), location: 1),
+                ],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            ))
         }
+        // Stays OFF / disabled
+        if !draftOn { return AnyShapeStyle(Color(white: 0.08)) }
+        // Will be turned ON (currently off, draft on)
+        if willChange {
+            return AnyShapeStyle(LinearGradient(
+                stops: [
+                    .init(color: Color.teal.opacity(0.65), location: 0),
+                    .init(color: Color.teal.opacity(0.65), location: 0.5),
+                    .init(color: Color.teal.opacity(0.45), location: 0.5),
+                    .init(color: Color.teal.opacity(0.45), location: 1),
+                ],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            ))
+        }
+        // Stays ON — use original colors
         if display.isBuiltin {
-            // Green-tinted diagonal stripes for internal display
-            return AnyShapeStyle(
-                LinearGradient(
-                    stops: [
-                        .init(color: Color.green.opacity(0.55), location: 0),
-                        .init(color: Color.green.opacity(0.55), location: 0.5),
-                        .init(color: Color.green.opacity(0.4), location: 0.5),
-                        .init(color: Color.green.opacity(0.4), location: 1),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-        } else {
-            // Blue-tinted diagonal stripes for external display
-            return AnyShapeStyle(
-                LinearGradient(
-                    stops: [
-                        .init(color: Color.blue.opacity(0.5), location: 0),
-                        .init(color: Color.blue.opacity(0.5), location: 0.5),
-                        .init(color: Color.blue.opacity(0.35), location: 0.5),
-                        .init(color: Color.blue.opacity(0.35), location: 1),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
+            return AnyShapeStyle(LinearGradient(
+                stops: [
+                    .init(color: Color.green.opacity(0.55), location: 0),
+                    .init(color: Color.green.opacity(0.55), location: 0.5),
+                    .init(color: Color.green.opacity(0.4), location: 0.5),
+                    .init(color: Color.green.opacity(0.4), location: 1),
+                ],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            ))
         }
+        return AnyShapeStyle(LinearGradient(
+            stops: [
+                .init(color: Color.blue.opacity(0.5), location: 0),
+                .init(color: Color.blue.opacity(0.5), location: 0.5),
+                .init(color: Color.blue.opacity(0.35), location: 0.5),
+                .init(color: Color.blue.opacity(0.35), location: 1),
+            ],
+            startPoint: .topLeading, endPoint: .bottomTrailing
+        ))
     }
 }
 
