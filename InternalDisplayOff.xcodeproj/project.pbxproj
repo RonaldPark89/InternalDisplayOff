@@ -13,6 +13,7 @@
 		AA00000000000000000003 /* DisplayManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000003 /* DisplayManager.swift */; };
 		AA00000000000000000004 /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000004 /* PopoverView.swift */; };
 		AA00000000000000000008 /* LaunchManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000008 /* LaunchManager.swift */; };
+		AA0000000000000000000A /* SceneManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000A /* SceneManager.swift */; };
 		AA00000000000000000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000009 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -26,6 +27,7 @@
 		AB00000000000000000006 /* InternalDisplayOff.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = InternalDisplayOff.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AB00000000000000000008 /* LaunchManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchManager.swift; sourceTree = "<group>"; };
 		AB00000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AB0000000000000000000A /* SceneManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -57,6 +59,7 @@
 				AB00000000000000000003 /* DisplayManager.swift */,
 				AB00000000000000000004 /* PopoverView.swift */,
 				AB00000000000000000008 /* LaunchManager.swift */,
+				AB0000000000000000000A /* SceneManager.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -148,6 +151,7 @@
 				529916292FB16DA4000C53D8 /* ToastManager.swift in Sources */,
 				AA00000000000000000004 /* PopoverView.swift in Sources */,
 				AA00000000000000000008 /* LaunchManager.swift in Sources */,
+				AA0000000000000000000A /* SceneManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

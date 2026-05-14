@@ -41,6 +41,7 @@ swiftc \
     -O \
     -parse-as-library \
     Sources/DisplayManager.swift \
+    Sources/SceneManager.swift \
     Sources/LaunchManager.swift \
     Sources/ToastManager.swift \
     Sources/PopoverView.swift \
