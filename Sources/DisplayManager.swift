@@ -349,6 +349,20 @@ class DisplayManager: ObservableObject {
                 ToastManager.shared.showToast(message: "Internal Display Restored")
                 self.forceEnableFromBackup()
             }
+
+            // Safety net: if we believe the internal display is disabled but it has
+            // no entry in displays (cache miss), re-add a placeholder so the UI
+            // can still show it and "All On" / enableInternalDisplay can restore it.
+            if self.isInternalDisplayOff,
+               let internalID = self.cachedInternalDisplayID,
+               !self.displays.contains(where: { $0.id == internalID }) {
+                let placeholder = DisplayState(
+                    id: internalID, name: "Built-in Display", isBuiltin: true,
+                    physicalSizeInches: 0, resolution: .zero, frame: .zero, isEnabled: false
+                )
+                self.disabledDisplayCache[internalID] = placeholder
+                self.displays.append(placeholder)
+            }
         }
     }
 
@@ -370,7 +384,10 @@ class DisplayManager: ObservableObject {
 
     func disableInternalDisplay() {
         NotificationCenter.default.post(name: NSNotification.Name("DisplayWillToggle"), object: nil)
-        refreshDisplayInfo()
+        // Do NOT call refreshDisplayInfo() here: the async state update it queues would
+        // overwrite displays with a stale snapshot that shows the internal as enabled,
+        // racing with the success handler. externalDisplayCount is already current from
+        // the last screen-change notification.
 
         guard externalDisplayCount > 0 else {
             lastError = "No external display detected."
@@ -385,8 +402,31 @@ class DisplayManager: ObservableObject {
             return
         }
 
-        // Cache before disabling
-        if let state = displays.first(where: { $0.id == displayID }) {
+        // Build a cache entry so the display remains visible in the spatial map after
+        // disabling. Prefer the already-tracked state; fall back to a live NSScreen lookup
+        // in case displays hasn't been populated yet (e.g. very first interaction).
+        if disabledDisplayCache[displayID] == nil {
+            let state: DisplayState
+            if let existing = displays.first(where: { $0.id == displayID }) {
+                state = existing
+            } else if let screen = NSScreen.screens.first(where: {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
+            }) {
+                let inches = sizeInInches(displayID)
+                let name = screen.localizedName.trimmingCharacters(in: .whitespaces)
+                state = DisplayState(
+                    id: displayID,
+                    name: name.isEmpty ? "Built-in Display" : name,
+                    isBuiltin: true,
+                    physicalSizeInches: inches,
+                    resolution: CGSize(width: screen.frame.width, height: screen.frame.height),
+                    frame: screen.frame,
+                    isEnabled: true
+                )
+            } else {
+                state = DisplayState(id: displayID, name: "Built-in Display", isBuiltin: true,
+                                     physicalSizeInches: 0, resolution: .zero, frame: .zero, isEnabled: true)
+            }
             disabledDisplayCache[displayID] = state
         }
 
