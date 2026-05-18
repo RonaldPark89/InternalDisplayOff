@@ -140,7 +140,9 @@ class DisplayManager: ObservableObject {
     private func startFallbackTimer() {
         let queue = DispatchQueue.global(qos: .background)
         fallbackTimer = DispatchSource.makeTimerSource(queue: queue)
-        fallbackTimer?.schedule(deadline: .now(), repeating: 2.0)
+        // 10s interval — this is only a safety net for when the internal display
+        // is already off. No need to wake the CPU every 2s while idle.
+        fallbackTimer?.schedule(deadline: .now() + 10.0, repeating: 10.0)
         fallbackTimer?.setEventHandler { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isInternalDisplayOff else { return }

@@ -106,14 +106,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.displayManager.refreshDisplayInfo()
         }
 
-        // Update status icon whenever display state changes
+        // Update status icon whenever display state changes.
+        // Use DispatchQueue.main (not RunLoop.main) — RunLoop.main fires on every
+        // run loop iteration, which during Core Animation can be 60fps, causing
+        // updateStatusIcon() to run at screen refresh rate and burn CPU.
         displayManager.$displays
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateStatusIcon() }
             .store(in: &cancellables)
 
         displayManager.$isInternalDisplayOff
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateStatusIcon() }
             .store(in: &cancellables)
     }

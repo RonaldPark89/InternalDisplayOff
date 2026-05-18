@@ -115,7 +115,8 @@ struct PopoverView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .onAppear { pulseAnimation = true }
+        .onAppear  { pulseAnimation = true  }
+        .onDisappear { pulseAnimation = false }
     }
 
     private var iconSymbol: String {
