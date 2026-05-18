@@ -5,7 +5,7 @@ A lightweight macOS menubar app that **disables/enables your MacBook's internal 
 > Vibe coded with [Claude Code](https://claude.ai/code)
 
 <p align="center">
- <img src="./Screenshot/Screenshot%202026-05-17%20at%208.13.50%20PM.png" alt="The Tet" />
+  <img src="./Screenshot/menubar.png" alt="InternalDisplayOff menubar popover" width="420" />
 </p>
 
 ## Why?
@@ -78,6 +78,11 @@ You may need to grant **Accessibility** permissions for the global keyboard shor
 - To update the displayed version, edit `CFBundleShortVersionString` in `Resources/Info.plist`
 
 ## Changelog
+
+### v1.01.01
+- **CPU fix — popover open:** Removed `.repeatForever` animation from the status dot, which was causing continuous 60fps SwiftUI re-renders of the entire popover view tree while open (~15% CPU → near 0%).
+- **CPU fix — popover closed:** Added `NSPopoverDelegate.popoverDidClose` so the `NSHostingController` is always deallocated after close — including transient click-outside dismissals that previously kept `@ObservedObject` subscriptions alive indefinitely (~9% residual CPU → 0%).
+- **Draft state fix:** Display thumbnails no longer show stale "→ OFF" after re-enabling a display; `draftEnabled` entries are now cleared whenever the actual display state changes.
 
 ### v1.01.00
 - **Multi-display control:** All connected displays are now individually controllable — not just the built-in. Each display can be toggled on/off independently.
