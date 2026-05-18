@@ -4,7 +4,9 @@ A lightweight macOS menubar app that **disables/enables your MacBook's internal 
 
 > Vibe coded with [Claude Code](https://claude.ai/code)
 
-![Menubar](Screenshot/Screenshot%202026-05-17%20at%208.13.50%20PM.png)
+<p align="center">
+ <img src="./Screenshot/Screenshot%202026-05-17%20at%208.13.50%20PM.png" alt="The Tet" />
+</p>
 
 ## Why?
 
