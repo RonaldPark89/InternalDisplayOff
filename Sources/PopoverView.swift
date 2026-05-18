@@ -8,7 +8,6 @@ struct PopoverView: View {
     var onQuit: () -> Void
 
     @State private var isHoveringQuit = false
-    @State private var pulseAnimation = false
     @AppStorage("ShowStatusNotifications") private var showNotifications = true
 
     // Draft state: user toggles monitors here before hitting Apply.
@@ -71,6 +70,18 @@ struct PopoverView: View {
         }
         .frame(width: 380)
         .onAppear { resetDraft() }
+        .onChange(of: displays) { newDisplays in
+            // When the actual display state changes (Apply, All On, external toggle),
+            // drop any draft entries that are now stale (draft == actual, or display gone).
+            let currentIDs = Set(newDisplays.map(\.id))
+            for id in Array(draftEnabled.keys) {
+                guard currentIDs.contains(id) else { draftEnabled.removeValue(forKey: id); continue }
+                if let d = newDisplays.first(where: { $0.id == id }),
+                   draftEnabled[id] == d.isEnabled {
+                    draftEnabled.removeValue(forKey: id)
+                }
+            }
+        }
     }
 
     // MARK: - Header
@@ -98,11 +109,7 @@ struct PopoverView: View {
             Spacer()
 
             HStack(spacing: 4) {
-                Circle()
-                    .fill(onCount < displays.count ? Color.orange : Color.green)
-                    .frame(width: 6, height: 6)
-                    .opacity(pulseAnimation ? 0.6 : 1.0)
-                    .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: pulseAnimation)
+                PulsingDot(color: onCount < displays.count ? .orange : .green)
                 Text("\(onCount)/\(displays.count)")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.secondary)
@@ -115,8 +122,6 @@ struct PopoverView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .onAppear  { pulseAnimation = true  }
-        .onDisappear { pulseAnimation = false }
     }
 
     private var iconSymbol: String {
@@ -424,6 +429,18 @@ struct PopoverView: View {
             sceneManager.save(scene)
             ToastManager.shared.showToast(message: "Saved as scene")
         }
+    }
+}
+
+// MARK: - PulsingDot
+
+private struct PulsingDot: View {
+    let color: Color
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
     }
 }
 

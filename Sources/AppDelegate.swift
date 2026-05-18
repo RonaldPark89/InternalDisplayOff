@@ -4,7 +4,7 @@ import Carbon
 import Combine
 import OSLog
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private let displayManager = DisplayManager.shared
@@ -80,16 +80,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
+        popover.delegate = self
+        // contentViewController is set fresh each time the popover opens —
+        // see showPopover(). Keeping a permanent NSHostingController alive
+        // in the background keeps @ObservedObject subscriptions and
+        // repeatForever animations running even when the popover is closed.
+    }
 
+    // MARK: - NSPopoverDelegate
+
+    func popoverDidClose(_ notification: Notification) {
+        // Deallocate the hosting controller regardless of HOW the popover closed
+        // (explicit close, transient click-outside, or DisplayWillToggle). Without
+        // this, transient closes leave the NSHostingController alive indefinitely,
+        // keeping @ObservedObject subscriptions active and burning ~9% CPU.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.popover.contentViewController = nil
+        }
+    }
+
+    private func makePopoverController() -> NSHostingController<PopoverView> {
         let contentView = PopoverView(
             displayManager: displayManager,
             sceneManager: SceneManager.shared,
             onQuit: { NSApp.terminate(nil) }
         )
-
-        let hostingController = NSHostingController(rootView: contentView)
-        hostingController.sizingOptions = .preferredContentSize
-        popover.contentViewController = hostingController
+        let hc = NSHostingController(rootView: contentView)
+        hc.sizingOptions = .preferredContentSize
+        return hc
     }
 
     // MARK: - Display Observer
@@ -192,8 +210,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         displayManager.refreshDisplayInfo()
         LaunchManager.shared.refreshStatus()
-        // One-tick defer so the status bar window's frame settles after any
-        // display reconfiguration or drag in System Preferences → Arrange.
+        // Fresh controller every open — stops background @ObservedObject
+        // subscriptions and Core Animation loops from the previous session.
+        popover.contentViewController = makePopoverController()
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.popover.isShown else { return }
             self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -202,5 +221,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func closePopover() {
         popover.performClose(nil)
+        // NSPopoverDelegate.popoverDidClose handles the contentViewController cleanup.
     }
 }

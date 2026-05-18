@@ -5,7 +5,7 @@ import OSLog
 
 // MARK: - DisplayState
 
-struct DisplayState: Identifiable {
+struct DisplayState: Identifiable, Equatable {
     let id: CGDirectDisplayID
     let name: String
     let isBuiltin: Bool
