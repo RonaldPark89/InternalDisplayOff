@@ -2,7 +2,9 @@
 
 A lightweight macOS menubar app that **disables/enables your MacBook's internal display** — giving you clamshell-mode benefits while keeping your keyboard, trackpad, and speakers fully functional.
 
-> Vibe coded with [Claude Code](https://claude.ai/code) and Antigravity Gemini
+> Vibe coded with [Claude Code](https://claude.ai/code)
+
+![Menubar](Screenshot/Screenshot%202026-05-17%20at%208.13.50%20PM.png)
 
 ## Why?
 
@@ -74,6 +76,16 @@ You may need to grant **Accessibility** permissions for the global keyboard shor
 - To update the displayed version, edit `CFBundleShortVersionString` in `Resources/Info.plist`
 
 ## Changelog
+
+### v1.01.00
+- **Multi-display control:** All connected displays are now individually controllable — not just the built-in. Each display can be toggled on/off independently.
+- **Spatial map:** The popover shows a live spatial map of your displays, mirroring their real-world arrangement. Tap any display thumbnail to stage a change.
+- **Draft / Apply workflow:** Display changes are staged as a draft before being applied. Tap displays to toggle their intended state, then hit **Apply** to commit or **Reset** to cancel.
+- **Display scenes:** Save any display arrangement as a named scene and restore it with one click. Scenes are persisted across launches.
+- **Built-in scenes:** Automatically generated scenes that adapt to your connected hardware — *All Displays*, *Focus on [size]* (one per external), *Internal Only*, and *Externals Only*.
+- **SkyLight API fallback:** Now resolves `SLSConfigureDisplayEnabled` from the SkyLight private framework first, falling back to `CGSConfigureDisplayEnabled`, improving compatibility across macOS versions.
+- **`DisplayState` model:** Displays are represented with name, physical size (inches), resolution, spatial frame, built-in flag, and enabled state.
+- **`SceneManager`:** New class managing scene persistence via `UserDefaults`, with separate built-in and user scene lists.
 
 ### v1.00.02
 - **Bug fixes & thread safety:** Fixed a data race where the fallback timer read display state off the main thread; emergency hardware check now correctly executes on the main thread.

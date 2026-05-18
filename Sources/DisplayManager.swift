@@ -11,7 +11,7 @@ struct DisplayState: Identifiable {
     let isBuiltin: Bool
     let physicalSizeInches: Double
     let resolution: CGSize
-    let frame: CGRect
+    var frame: CGRect
     var isEnabled: Bool
 
     var sizeLabel: String {
@@ -65,10 +65,40 @@ class DisplayManager: ObservableObject {
 
     private var cachedInternalDisplayID: CGDirectDisplayID?
     private var disabledDisplayCache: [CGDirectDisplayID: DisplayState] = [:]
+    private var pendingDisabledIDs: Set<CGDirectDisplayID> = []
+    private var lastKnownFrames: [CGDirectDisplayID: CGRect] = [:]
     private var fallbackTimer: DispatchSourceTimer?
 
     private var backupFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".internal_display_backup_id")
+    }
+
+    // Persists external display IDs that we have disabled so they survive a crash/force-quit.
+    // On next launch we immediately re-enable them before the user can interact.
+    private let disabledExternalIDsKey = "DisabledExternalDisplayIDs"
+
+    private func persistDisabledExternalIDs() {
+        let ids = disabledDisplayCache.values
+            .filter { !$0.isBuiltin }
+            .map { Int($0.id) }
+        UserDefaults.standard.set(ids, forKey: disabledExternalIDsKey)
+    }
+
+    private func restorePersistedExternalDisplays() {
+        guard let ids = UserDefaults.standard.array(forKey: disabledExternalIDsKey) as? [Int],
+              !ids.isEmpty else { return }
+        guard let configEnabled = PrivateAPI.ConfigureDisplayEnabled else { return }
+
+        logger.info("Restoring \(ids.count) persisted disabled external display(s) from previous session.")
+        var configRef: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&configRef) == .success else { return }
+
+        for idInt in ids {
+            let id = CGDirectDisplayID(idInt)
+            _ = configEnabled(configRef, id, 1)
+        }
+        CGCompleteDisplayConfiguration(configRef, .forSession)
+        UserDefaults.standard.removeObject(forKey: disabledExternalIDsKey)
     }
 
     private func saveDisplayIDToDisk(_ displayID: CGDirectDisplayID) {
@@ -96,6 +126,11 @@ class DisplayManager: ObservableObject {
                 physicalSizeInches: 0, resolution: .zero, frame: .zero, isEnabled: false
             )
         }
+
+        // Recover any external displays that were left disabled by a previous session
+        // (crash, force-quit, etc.). SLSConfigureDisplayEnabled(0) fully removes the
+        // display from the system; persisting the ID is the only way to restore it.
+        restorePersistedExternalDisplays()
 
         refreshDisplayInfo()
         setupObservers()
@@ -152,17 +187,42 @@ class DisplayManager: ObservableObject {
     // Applies multiple enable/disable changes in one display configuration session.
     private func configureDisplays(_ changes: [(CGDirectDisplayID, Bool)]) -> CGError {
         guard let configEnabled = PrivateAPI.ConfigureDisplayEnabled else { return .failure }
+
+        // macOS fires one reconfiguration event per disabled display, not one per
+        // transaction. Without tracking, refreshDisplayInfo() sees a display that is
+        // "still in NSScreen.screens" during an intermediate event and evicts it from
+        // disabledDisplayCache, making it unrestorable. Guard against this by holding
+        // the IDs until the notification flurry settles.
+        let disablingIDs = changes.filter { !$0.1 }.map { $0.0 }
+        pendingDisabledIDs.formUnion(disablingIDs)
+
         var configRef: CGDisplayConfigRef?
         var result = CGBeginDisplayConfiguration(&configRef)
-        guard result == .success else { return result }
+        guard result == .success else {
+            pendingDisabledIDs.subtract(disablingIDs)
+            return result
+        }
         for (id, enabled) in changes {
             result = configEnabled(configRef, id, enabled ? 1 : 0)
             if result != .success {
                 CGCancelDisplayConfiguration(configRef)
+                pendingDisabledIDs.subtract(disablingIDs)
                 return result
             }
         }
-        return CGCompleteDisplayConfiguration(configRef, .forSession)
+        result = CGCompleteDisplayConfiguration(configRef, .forSession)
+        if result != .success {
+            pendingDisabledIDs.subtract(disablingIDs)
+            return result
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self else { return }
+            self.pendingDisabledIDs.subtract(disablingIDs)
+            self.refreshDisplayInfo()
+        }
+
+        return result
     }
 
     // MARK: - Multi-Display Operations
@@ -188,12 +248,16 @@ class DisplayManager: ObservableObject {
         if result == .success {
             if newEnabled {
                 disabledDisplayCache.removeValue(forKey: id)
+            }
+            persistDisabledExternalIDs()
+            if newEnabled {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.refreshDisplayInfo() }
             }
             ToastManager.shared.showToast(message: newEnabled ? "\(display.name) Enabled" : "\(display.name) Disabled")
         } else {
             // Undo cache change
             if newEnabled { disabledDisplayCache[id] = display } else { disabledDisplayCache.removeValue(forKey: id) }
+            persistDisabledExternalIDs()
             DispatchQueue.main.async { self.lastError = "Failed to toggle display (Error: \(result.rawValue))" }
         }
     }
@@ -204,17 +268,30 @@ class DisplayManager: ObservableObject {
         }
         NotificationCenter.default.post(name: NSNotification.Name("DisplayWillToggle"), object: nil)
 
-        let changes = displays.map { ($0.id, $0.id == id) }
+        // Only include displays whose state actually needs to change.
+        // Calling SLSConfigureDisplayEnabled on an already-disabled display
+        // returns an error that fails the entire configuration transaction.
+        let changes = displays.compactMap { d -> (CGDirectDisplayID, Bool)? in
+            let target = (d.id == id)
+            return d.isEnabled != target ? (d.id, target) : nil
+        }
+        guard !changes.isEmpty else {
+            let name = displays.first(where: { $0.id == id })?.name ?? "Display"
+            ToastManager.shared.showToast(message: "Only \(name) on")
+            return
+        }
         let result = configureDisplays(changes)
 
         if result == .success {
             disabledDisplayCache.removeValue(forKey: id)
+            persistDisabledExternalIDs()
             let isInternal = cachedInternalDisplayID == id
             DispatchQueue.main.async { self.isInternalDisplayOff = !isInternal }
             let name = displays.first(where: { $0.id == id })?.name ?? "Display"
             ToastManager.shared.showToast(message: "Only \(name) on")
         } else {
             for d in displays where d.id != id { disabledDisplayCache.removeValue(forKey: d.id) }
+            persistDisabledExternalIDs()
             DispatchQueue.main.async { self.lastError = "Failed to solo display" }
         }
     }
@@ -226,6 +303,7 @@ class DisplayManager: ObservableObject {
             return
         }
         for d in disabled { disabledDisplayCache.removeValue(forKey: d.id) }
+        persistDisabledExternalIDs()
         NotificationCenter.default.post(name: NSNotification.Name("DisplayWillToggle"), object: nil)
 
         let result = configureDisplays(disabled.map { ($0.id, true) })
@@ -236,6 +314,7 @@ class DisplayManager: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.refreshDisplayInfo() }
         } else {
             for d in disabled { disabledDisplayCache[d.id] = d }
+            persistDisabledExternalIDs()
             DispatchQueue.main.async { self.lastError = "Failed to enable all displays" }
         }
     }
@@ -251,6 +330,8 @@ class DisplayManager: ObservableObject {
                 else { disabledDisplayCache.removeValue(forKey: display.id) }
             }
         }
+        persistDisabledExternalIDs()
+
         guard !changes.isEmpty else {
             ToastManager.shared.showToast(message: "Applied: \(sceneName)")
             return
@@ -274,6 +355,7 @@ class DisplayManager: ObservableObject {
                 if !enabled { disabledDisplayCache.removeValue(forKey: id) }
                 else if let d = displays.first(where: { $0.id == id }) { disabledDisplayCache[d.id] = d }
             }
+            persistDisabledExternalIDs()
             DispatchQueue.main.async { self.lastError = "Failed to apply scene" }
         }
     }
@@ -310,11 +392,32 @@ class DisplayManager: ObservableObject {
                 frame: screen.frame, isEnabled: true
             )
             enabledDisplays.append(state)
-            disabledDisplayCache.removeValue(forKey: displayID)
+            if !pendingDisabledIDs.contains(displayID) {
+                disabledDisplayCache.removeValue(forKey: displayID)
+            }
         }
 
+        // When the primary display changes (e.g. external disabled → internal becomes main),
+        // macOS shifts the coordinate origin to the new primary. Cached frames for disabled
+        // displays are still in the old coordinate system, causing them to overlap with the
+        // enabled display in the spatial map. Detect the shift and adjust cached frames.
+        if let newPrimary = enabledDisplays.first(where: { $0.frame.origin == .zero }),
+           let oldFrame = lastKnownFrames[newPrimary.id],
+           oldFrame.origin != .zero,
+           !disabledDisplayCache.isEmpty {
+            let shiftX = oldFrame.minX
+            let shiftY = oldFrame.minY
+            for id in Array(disabledDisplayCache.keys) {
+                disabledDisplayCache[id]?.frame.origin.x -= shiftX
+                disabledDisplayCache[id]?.frame.origin.y -= shiftY
+            }
+        }
+        for d in enabledDisplays { lastKnownFrames[d.id] = d.frame }
+
+        let enabledIDs = Set(enabledDisplays.map { $0.id })
         var allDisplays = enabledDisplays
         for var cached in disabledDisplayCache.values {
+            guard !enabledIDs.contains(cached.id) else { continue }
             cached.isEnabled = false
             allDisplays.append(cached)
         }
@@ -528,6 +631,10 @@ class DisplayManager: ObservableObject {
             _ = configureDisplays(disabled.map { ($0.id, true) })
             for d in disabled { disabledDisplayCache.removeValue(forKey: d.id) }
         }
+        // Clear the persisted IDs so the next launch doesn't fire a redundant
+        // SLSConfigureDisplayEnabled call on already-enabled monitors (which
+        // causes a brief display reconfiguration that looks like a disconnect).
+        UserDefaults.standard.removeObject(forKey: disabledExternalIDsKey)
     }
 
     // MARK: - Emergency
