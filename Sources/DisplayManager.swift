@@ -59,6 +59,9 @@ class DisplayManager: ObservableObject {
     @Published var isInternalDisplayOff = UserDefaults.standard.bool(forKey: "IsInternalDisplayOff") {
         didSet { UserDefaults.standard.set(isInternalDisplayOff, forKey: "IsInternalDisplayOff") }
     }
+    @Published var autoMode = UserDefaults.standard.bool(forKey: "AutoMode") {
+        didSet { UserDefaults.standard.set(autoMode, forKey: "AutoMode") }
+    }
     @Published var displays: [DisplayState] = []
     @Published var externalDisplayCount = 0
     @Published var lastError: String? = nil
@@ -170,7 +173,15 @@ class DisplayManager: ObservableObject {
 
     func handleHardwareDisplayChange() {
         logger.info("Hardware display reconfiguration detected.")
-        refreshDisplayInfo()
+        let prevExternalCount = externalDisplayCount
+        refreshDisplayInfo {
+            // Auto mode: first external display just connected → disable internal
+            if self.autoMode && !self.isInternalDisplayOff
+                && self.externalDisplayCount > 0 && prevExternalCount == 0 {
+                logger.info("Auto mode: external display connected, disabling internal.")
+                self.disableInternalDisplay()
+            }
+        }
     }
 
     private func handleScreenParametersChange() {
@@ -364,7 +375,7 @@ class DisplayManager: ObservableObject {
 
     // MARK: - Refresh
 
-    func refreshDisplayInfo() {
+    func refreshDisplayInfo(completion: (() -> Void)? = nil) {
         let screens = NSScreen.screens
         var enabledDisplays: [DisplayState] = []
         var seenIDs = Set<CGDirectDisplayID>()
@@ -468,6 +479,7 @@ class DisplayManager: ObservableObject {
                 self.disabledDisplayCache[internalID] = placeholder
                 self.displays.append(placeholder)
             }
+            completion?()
         }
     }
 

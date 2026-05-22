@@ -38,8 +38,10 @@ swiftc \
     -framework Carbon \
     -framework ServiceManagement \
     -framework Combine \
+    -framework IOKit \
     -O \
     -parse-as-library \
+    Sources/BrightnessController.swift \
     Sources/DisplayManager.swift \
     Sources/SceneManager.swift \
     Sources/LaunchManager.swift \

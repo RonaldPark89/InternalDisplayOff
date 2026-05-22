@@ -4,6 +4,16 @@ import Carbon
 import Combine
 import OSLog
 
+private func brightnessKeyEventCallback(
+    _ proxy: CGEventTapProxy, _ type: CGEventType, _ event: CGEvent, _ userInfo: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    if let userInfo {
+        Unmanaged<AppDelegate>.fromOpaque(userInfo).takeUnretainedValue()
+            .handleBrightnessEvent(event: event)
+    }
+    return Unmanaged.passRetained(event)
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
@@ -13,6 +23,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private var hotKeyRef: EventHotKeyRef?
     private var carbonEventHandlerRef: EventHandlerRef?
+    private var brightnessTap: CFMachPort?
+    private var brightnessRunLoopSource: CFRunLoopSource?
 
     // MARK: - App Lifecycle
 
@@ -32,6 +44,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         setupGlobalHotKey()
+        setupBrightnessKeyTap()
     }
 
     private func setupGlobalHotKey() {
@@ -60,6 +73,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         displayManager.cleanup()
         if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
         if let ref = carbonEventHandlerRef { RemoveEventHandler(ref) }
+        if let tap = brightnessTap { CGEvent.tapEnable(tap: tap, enable: false) }
     }
 
     // MARK: - Status Bar
@@ -222,5 +236,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func closePopover() {
         popover.performClose(nil)
         // NSPopoverDelegate.popoverDidClose handles the contentViewController cleanup.
+    }
+
+    // MARK: - Brightness Key Tap
+
+    private func setupBrightnessKeyTap() {
+        // Listen-only tap: we observe brightness key events and mirror them to external displays.
+        // No event is consumed — the original (which silently fails on the disabled internal display)
+        // passes through unchanged.
+        let mask = CGEventMask(1 << 14)  // NX_SYSDEFINED events (media / special keys)
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgAnnotatedSessionEventTap,
+            place: .tailAppendEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: brightnessKeyEventCallback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            logger.warning("Could not create brightness key event tap — check Accessibility permissions")
+            return
+        }
+        brightnessTap = tap
+        let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        brightnessRunLoopSource = src
+        CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        logger.info("Brightness key event tap registered")
+    }
+
+    func handleBrightnessEvent(event: CGEvent) {
+        guard UserDefaults.standard.bool(forKey: "RerouteBrightnessKeys"),
+              displayManager.isInternalDisplayOff else { return }
+        guard let nsEvent = NSEvent(cgEvent: event),
+              nsEvent.type == .systemDefined,
+              nsEvent.subtype.rawValue == 8 else { return }
+
+        let keyCode = (nsEvent.data1 >> 16) & 0xFFFF
+        let keyIsUp = ((nsEvent.data1 >> 8) & 0xFF) == 0x0B  // NX_KEYUP
+        guard !keyIsUp, keyCode == 2 || keyCode == 3 else { return }  // 2=brightness up, 3=down
+
+        BrightnessController.shared.adjustAllExternalBrightness(increase: keyCode == 2)
     }
 }

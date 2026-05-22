@@ -9,6 +9,7 @@ struct PopoverView: View {
 
     @State private var isHoveringQuit = false
     @AppStorage("ShowStatusNotifications") private var showNotifications = true
+    @AppStorage("RerouteBrightnessKeys") private var rerouteBrightnessKeys = false
 
     // Draft state: user toggles monitors here before hitting Apply.
     // nil entry means "no override — use the display's actual current state."
@@ -335,6 +336,20 @@ struct PopoverView: View {
                 title: "Status Notifications",
                 subtitle: "Show toast messages on change",
                 isOn: $showNotifications
+            )
+            Divider().padding(.vertical, 2)
+            settingsRow(
+                icon: "display.and.arrow.down",
+                title: "Auto Mode",
+                subtitle: "Turn off internal when external connects",
+                isOn: $displayManager.autoMode
+            )
+            Divider().padding(.vertical, 2)
+            settingsRow(
+                icon: "sun.max",
+                title: "Reroute Brightness Keys",
+                subtitle: "F1/F2 controls external displays when internal is off",
+                isOn: $rerouteBrightnessKeys
             )
         }
         .padding(10)
