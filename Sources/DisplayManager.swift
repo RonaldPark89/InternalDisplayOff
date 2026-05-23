@@ -176,15 +176,25 @@ class DisplayManager: ObservableObject {
 
     func handleHardwareDisplayChange() {
         logger.info("Hardware display reconfiguration detected.")
-        // Snapshot BEFORE refresh. Note: externalDisplayCount may already be updated
-        // by a concurrent didChangeScreenParametersNotification refresh, so we use a
-        // dedicated counter that is only written here, not in the notification path.
         let snapshot = lastHardwareExternalCount
         refreshDisplayInfo {
             defer { self.lastHardwareExternalCount = self.externalDisplayCount }
-            if self.autoMode && !self.isInternalDisplayOff
-                && self.externalDisplayCount > 0 && snapshot == 0 {
-                logger.info("Auto mode: first external display connected, disabling internal.")
+            guard self.autoMode && !self.isInternalDisplayOff
+                  && self.externalDisplayCount > 0 && snapshot == 0 else { return }
+
+            // Delay so macOS fully settles the external monitor before we disable the
+            // internal display. Without this, NSScreen.screens is still in flux:
+            // disabledDisplayCache gets a zero-frame fallback entry and a second
+            // reconfiguration event can evict it, leaving the display untracked.
+            logger.info("Auto mode: external connected, scheduling internal disable in 2s.")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                // Re-check — user may have manually re-enabled or disconnected by now
+                guard self.autoMode && !self.isInternalDisplayOff
+                      && self.externalDisplayCount > 0 else {
+                    logger.info("Auto mode: conditions changed, skipping disable.")
+                    return
+                }
+                logger.info("Auto mode: disabling internal display.")
                 self.disableInternalDisplay()
             }
         }
@@ -525,33 +535,31 @@ class DisplayManager: ObservableObject {
             return
         }
 
-        // Build a cache entry so the display remains visible in the spatial map after
-        // disabling. Prefer the already-tracked state; fall back to a live NSScreen lookup
-        // in case displays hasn't been populated yet (e.g. very first interaction).
-        if disabledDisplayCache[displayID] == nil {
-            let state: DisplayState
-            if let existing = displays.first(where: { $0.id == displayID }) {
-                state = existing
-            } else if let screen = NSScreen.screens.first(where: {
-                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
-            }) {
-                let inches = sizeInInches(displayID)
-                let name = screen.localizedName.trimmingCharacters(in: .whitespaces)
-                state = DisplayState(
-                    id: displayID,
-                    name: name.isEmpty ? "Built-in Display" : name,
-                    isBuiltin: true,
-                    physicalSizeInches: inches,
-                    resolution: CGSize(width: screen.frame.width, height: screen.frame.height),
-                    frame: screen.frame,
-                    isEnabled: true
-                )
-            } else {
-                state = DisplayState(id: displayID, name: "Built-in Display", isBuiltin: true,
-                                     physicalSizeInches: 0, resolution: .zero, frame: .zero, isEnabled: true)
-            }
-            disabledDisplayCache[displayID] = state
+        // Always rebuild the cache entry from the freshest source so that the spatial
+        // map thumbnail has correct frame/size data after disabling.
+        // Prefer a live NSScreen lookup, then the displays array, then a zero fallback.
+        let cacheState: DisplayState
+        if let screen = NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
+        }) {
+            let inches = sizeInInches(displayID)
+            let name = screen.localizedName.trimmingCharacters(in: .whitespaces)
+            cacheState = DisplayState(
+                id: displayID,
+                name: name.isEmpty ? "Built-in Display" : name,
+                isBuiltin: true,
+                physicalSizeInches: inches,
+                resolution: CGSize(width: screen.frame.width, height: screen.frame.height),
+                frame: screen.frame,
+                isEnabled: true
+            )
+        } else if let existing = displays.first(where: { $0.id == displayID }) {
+            cacheState = existing
+        } else {
+            cacheState = DisplayState(id: displayID, name: "Built-in Display", isBuiltin: true,
+                                      physicalSizeInches: 0, resolution: .zero, frame: .zero, isEnabled: true)
         }
+        disabledDisplayCache[displayID] = cacheState
 
         logger.info("Disabling internal display \(displayID)")
         var configRef: CGDisplayConfigRef?
