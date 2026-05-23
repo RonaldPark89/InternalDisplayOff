@@ -13,8 +13,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "InternalDisplayOff", category: "AppDelegate")
 
     private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyRefBrightDown: EventHotKeyRef?
+    private var hotKeyRefBrightUp: EventHotKeyRef?
     private var carbonEventHandlerRef: EventHandlerRef?
-    private var brightnessMonitor: Any?
 
     // MARK: - App Lifecycle
 
@@ -34,27 +35,52 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         setupGlobalHotKey()
-        setupBrightnessKeyTap()
     }
 
     private func setupGlobalHotKey() {
-        let hotKeyID = EventHotKeyID(signature: 0x49444f66, id: 1)
+        // id=1 → ⌃⌘D (toggle internal display)
+        // id=2 → ⌃F3  (brightness down — test mapping)
+        // id=3 → ⌃F4  (brightness up   — test mapping)
         let eventSpec = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))]
 
-        let handler: EventHandlerUPP = { (_, _, _) -> OSStatus in
+        let handler: EventHandlerUPP = { (_, event, _) -> OSStatus in
+            var hkID = EventHotKeyID()
+            GetEventParameter(event, UInt32(kEventParamDirectObject),
+                              UInt32(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &hkID)
             DispatchQueue.main.async {
-                DisplayManager.shared.toggleInternalDisplay()
-                if let appDelegate = NSApp.delegate as? AppDelegate {
-                    appDelegate.updateStatusIcon()
+                switch hkID.id {
+                case 1:
+                    DisplayManager.shared.toggleInternalDisplay()
+                    (NSApp.delegate as? AppDelegate)?.updateStatusIcon()
+                case 2, 3:
+                    guard UserDefaults.standard.bool(forKey: "RerouteBrightnessKeys") else { break }
+                    BrightnessController.shared.adjustAllExternalBrightness(increase: hkID.id == 3)
+                default: break
                 }
             }
             return noErr
         }
 
         InstallEventHandler(GetApplicationEventTarget(), handler, 1, eventSpec, nil, &carbonEventHandlerRef)
-        let result = RegisterEventHotKey(UInt32(2), UInt32(cmdKey | controlKey), hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
-        if result == noErr { logger.info("Registered global hotkey: ⌃⌘D") }
-        else { logger.error("Failed to register global hotkey: \(result)") }
+
+        let sig = OSType(0x49444f66)  // "IDOf"
+        if RegisterEventHotKey(UInt32(2), UInt32(cmdKey | controlKey),
+                                EventHotKeyID(signature: sig, id: 1),
+                                GetApplicationEventTarget(), 0, &hotKeyRef) == noErr {
+            logger.info("Registered hotkey: ⌃⌘D")
+        }
+        // kVK_F3 = 0x63, kVK_F4 = 0x76
+        if RegisterEventHotKey(0x63, UInt32(controlKey),
+                                EventHotKeyID(signature: sig, id: 2),
+                                GetApplicationEventTarget(), 0, &hotKeyRefBrightDown) == noErr {
+            logger.info("Registered hotkey: ⌃F3 (brightness down test)")
+        }
+        if RegisterEventHotKey(0x76, UInt32(controlKey),
+                                EventHotKeyID(signature: sig, id: 3),
+                                GetApplicationEventTarget(), 0, &hotKeyRefBrightUp) == noErr {
+            logger.info("Registered hotkey: ⌃F4 (brightness up test)")
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -62,8 +88,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         displayManager.forceEnableAll()
         displayManager.cleanup()
         if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
+        if let ref = hotKeyRefBrightDown { UnregisterEventHotKey(ref) }
+        if let ref = hotKeyRefBrightUp { UnregisterEventHotKey(ref) }
         if let ref = carbonEventHandlerRef { RemoveEventHandler(ref) }
-        if let monitor = brightnessMonitor { NSEvent.removeMonitor(monitor) }
     }
 
     // MARK: - Status Bar
@@ -228,35 +255,4 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // NSPopoverDelegate.popoverDidClose handles the contentViewController cleanup.
     }
 
-    // MARK: - Brightness Key Monitor
-
-    private func setupBrightnessKeyTap() {
-        // NSEvent global monitor receives NX_SYSDEFINED media/special-key events after
-        // the system has processed them. No permission needed beyond what ⌃⌘D already requires.
-        brightnessMonitor = NSEvent.addGlobalMonitorForEvents(matching: .systemDefined) { [weak self] event in
-            self?.handleBrightnessEvent(nsEvent: event)
-        }
-        if brightnessMonitor != nil {
-            logger.info("Brightness key global monitor registered")
-        } else {
-            logger.warning("Could not register brightness key global monitor")
-        }
-    }
-
-    private func handleBrightnessEvent(nsEvent: NSEvent) {
-        guard UserDefaults.standard.bool(forKey: "RerouteBrightnessKeys"),
-              displayManager.isInternalDisplayOff else { return }
-        // NX_SUBTYPE_AUX_CONTROL_BUTTONS — check both 7 and 8 (value varies by SDK)
-        let sub = nsEvent.subtype.rawValue
-        guard sub == 7 || sub == 8 else { return }
-
-        let keyCode = (nsEvent.data1 >> 16) & 0xFFFF
-        let keyIsUp = ((nsEvent.data1 >> 8) & 0xFF) == 0x0B  // NX_KEYUP
-        guard !keyIsUp else { return }
-        // NX_KEYTYPE_BRIGHTNESS_UP = 2, NX_KEYTYPE_BRIGHTNESS_DOWN = 3
-        guard keyCode == 2 || keyCode == 3 else { return }
-
-        logger.debug("Brightness key \(keyCode == 2 ? "up" : "down") — routing to external displays")
-        BrightnessController.shared.adjustAllExternalBrightness(increase: keyCode == 2)
-    }
 }
