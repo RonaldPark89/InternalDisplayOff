@@ -71,6 +71,9 @@ class DisplayManager: ObservableObject {
     private var pendingDisabledIDs: Set<CGDirectDisplayID> = []
     private var lastKnownFrames: [CGDirectDisplayID: CGRect] = [:]
     private var fallbackTimer: DispatchSourceTimer?
+    // Tracks external count as of the last hardware-change event (not polluted by
+    // intermediate refreshes from didChangeScreenParametersNotification).
+    private var lastHardwareExternalCount = 0
 
     private var backupFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".internal_display_backup_id")
@@ -173,12 +176,15 @@ class DisplayManager: ObservableObject {
 
     func handleHardwareDisplayChange() {
         logger.info("Hardware display reconfiguration detected.")
-        let prevExternalCount = externalDisplayCount
+        // Snapshot BEFORE refresh. Note: externalDisplayCount may already be updated
+        // by a concurrent didChangeScreenParametersNotification refresh, so we use a
+        // dedicated counter that is only written here, not in the notification path.
+        let snapshot = lastHardwareExternalCount
         refreshDisplayInfo {
-            // Auto mode: first external display just connected → disable internal
+            defer { self.lastHardwareExternalCount = self.externalDisplayCount }
             if self.autoMode && !self.isInternalDisplayOff
-                && self.externalDisplayCount > 0 && prevExternalCount == 0 {
-                logger.info("Auto mode: external display connected, disabling internal.")
+                && self.externalDisplayCount > 0 && snapshot == 0 {
+                logger.info("Auto mode: first external display connected, disabling internal.")
                 self.disableInternalDisplay()
             }
         }

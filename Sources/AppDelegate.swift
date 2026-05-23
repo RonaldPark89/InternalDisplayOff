@@ -4,15 +4,6 @@ import Carbon
 import Combine
 import OSLog
 
-private func brightnessKeyEventCallback(
-    _ proxy: CGEventTapProxy, _ type: CGEventType, _ event: CGEvent, _ userInfo: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
-    if let userInfo {
-        Unmanaged<AppDelegate>.fromOpaque(userInfo).takeUnretainedValue()
-            .handleBrightnessEvent(event: event)
-    }
-    return Unmanaged.passRetained(event)
-}
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
@@ -23,8 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private var hotKeyRef: EventHotKeyRef?
     private var carbonEventHandlerRef: EventHandlerRef?
-    private var brightnessTap: CFMachPort?
-    private var brightnessRunLoopSource: CFRunLoopSource?
+    private var brightnessMonitor: Any?
 
     // MARK: - App Lifecycle
 
@@ -73,7 +63,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         displayManager.cleanup()
         if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
         if let ref = carbonEventHandlerRef { RemoveEventHandler(ref) }
-        if let tap = brightnessTap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let monitor = brightnessMonitor { NSEvent.removeMonitor(monitor) }
     }
 
     // MARK: - Status Bar
@@ -238,43 +228,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // NSPopoverDelegate.popoverDidClose handles the contentViewController cleanup.
     }
 
-    // MARK: - Brightness Key Tap
+    // MARK: - Brightness Key Monitor
 
     private func setupBrightnessKeyTap() {
-        // Listen-only tap: we observe brightness key events and mirror them to external displays.
-        // No event is consumed — the original (which silently fails on the disabled internal display)
-        // passes through unchanged.
-        let mask = CGEventMask(1 << 14)  // NX_SYSDEFINED events (media / special keys)
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgAnnotatedSessionEventTap,
-            place: .tailAppendEventTap,
-            options: .listenOnly,
-            eventsOfInterest: mask,
-            callback: brightnessKeyEventCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else {
-            logger.warning("Could not create brightness key event tap — check Accessibility permissions")
-            return
+        // NSEvent global monitor receives NX_SYSDEFINED media/special-key events after
+        // the system has processed them. No permission needed beyond what ⌃⌘D already requires.
+        brightnessMonitor = NSEvent.addGlobalMonitorForEvents(matching: .systemDefined) { [weak self] event in
+            self?.handleBrightnessEvent(nsEvent: event)
         }
-        brightnessTap = tap
-        let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        brightnessRunLoopSource = src
-        CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-        logger.info("Brightness key event tap registered")
+        if brightnessMonitor != nil {
+            logger.info("Brightness key global monitor registered")
+        } else {
+            logger.warning("Could not register brightness key global monitor")
+        }
     }
 
-    func handleBrightnessEvent(event: CGEvent) {
+    private func handleBrightnessEvent(nsEvent: NSEvent) {
         guard UserDefaults.standard.bool(forKey: "RerouteBrightnessKeys"),
               displayManager.isInternalDisplayOff else { return }
-        guard let nsEvent = NSEvent(cgEvent: event),
-              nsEvent.type == .systemDefined,
-              nsEvent.subtype.rawValue == 8 else { return }
+        // NX_SUBTYPE_AUX_CONTROL_BUTTONS — check both 7 and 8 (value varies by SDK)
+        let sub = nsEvent.subtype.rawValue
+        guard sub == 7 || sub == 8 else { return }
 
         let keyCode = (nsEvent.data1 >> 16) & 0xFFFF
         let keyIsUp = ((nsEvent.data1 >> 8) & 0xFF) == 0x0B  // NX_KEYUP
-        guard !keyIsUp, keyCode == 2 || keyCode == 3 else { return }  // 2=brightness up, 3=down
+        guard !keyIsUp else { return }
+        // NX_KEYTYPE_BRIGHTNESS_UP = 2, NX_KEYTYPE_BRIGHTNESS_DOWN = 3
+        guard keyCode == 2 || keyCode == 3 else { return }
 
+        logger.debug("Brightness key \(keyCode == 2 ? "up" : "down") — routing to external displays")
         BrightnessController.shared.adjustAllExternalBrightness(increase: keyCode == 2)
     }
 }
