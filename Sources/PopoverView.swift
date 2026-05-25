@@ -348,7 +348,7 @@ struct PopoverView: View {
             settingsRow(
                 icon: "sun.max",
                 title: "Reroute Brightness Keys",
-                subtitle: "F1/F2 controls external displays when internal is off",
+                subtitle: "F1/F2 adjusts external display brightness",
                 isOn: $rerouteBrightnessKeys
             )
         }

@@ -74,6 +74,8 @@ class DisplayManager: ObservableObject {
     // Tracks external count as of the last hardware-change event (not polluted by
     // intermediate refreshes from didChangeScreenParametersNotification).
     private var lastHardwareExternalCount = 0
+    // Saved before sleep so we can re-apply the setting after wake.
+    private var wasInternalDisplayOffBeforeSleep = false
 
     private var backupFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".internal_display_backup_id")
@@ -165,8 +167,38 @@ class DisplayManager: ObservableObject {
         ) { [weak self] _ in
             self?.handleScreenParametersChange()
         }
+
+        // Save state before sleep; macOS re-enables all displays on wake, which
+        // causes refreshDisplayInfo() to clear isInternalDisplayOff. We use the
+        // saved flag to re-apply the user's setting after the wake settles.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.wasInternalDisplayOffBeforeSleep = self?.isInternalDisplayOff ?? false
+        }
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.handleWakeFromSleep()
+        }
+
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
         CGDisplayRegisterReconfigurationCallback(displayReconfigurationCallBack, userInfo)
+    }
+
+    private func handleWakeFromSleep() {
+        guard wasInternalDisplayOffBeforeSleep else { return }
+        wasInternalDisplayOffBeforeSleep = false
+        // Give macOS time to finish reconfiguring displays after wake before
+        // we re-disable the internal display.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self, self.externalDisplayCount > 0 else { return }
+            logger.info("Wake from sleep: re-applying internal display off setting.")
+            self.disableInternalDisplay()
+        }
     }
 
     func cleanup() {
