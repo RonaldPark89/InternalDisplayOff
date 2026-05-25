@@ -3,7 +3,6 @@ import SwiftUI
 import Carbon
 import Combine
 import OSLog
-
 class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
@@ -13,6 +12,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private var hotKeyRef: EventHotKeyRef?
     private var carbonEventHandlerRef: EventHandlerRef?
+    private var eventTap: CFMachPort?
+    private var tapRunLoopSource: CFRunLoopSource?
 
     // MARK: - App Lifecycle
 
@@ -35,23 +36,104 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func setupGlobalHotKey() {
-        let hotKeyID = EventHotKeyID(signature: 0x49444f66, id: 1)
+        // id=1 → ⌃⌘D (toggle internal display)
         let eventSpec = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))]
 
-        let handler: EventHandlerUPP = { (_, _, _) -> OSStatus in
+        let handler: EventHandlerUPP = { (_, event, _) -> OSStatus in
+            var hkID = EventHotKeyID()
+            GetEventParameter(event, UInt32(kEventParamDirectObject),
+                              UInt32(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &hkID)
             DispatchQueue.main.async {
-                DisplayManager.shared.toggleInternalDisplay()
-                if let appDelegate = NSApp.delegate as? AppDelegate {
-                    appDelegate.updateStatusIcon()
+                if hkID.id == 1 {
+                    DisplayManager.shared.toggleInternalDisplay()
+                    (NSApp.delegate as? AppDelegate)?.updateStatusIcon()
                 }
             }
             return noErr
         }
 
         InstallEventHandler(GetApplicationEventTarget(), handler, 1, eventSpec, nil, &carbonEventHandlerRef)
-        let result = RegisterEventHotKey(UInt32(2), UInt32(cmdKey | controlKey), hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
-        if result == noErr { logger.info("Registered global hotkey: ⌃⌘D") }
-        else { logger.error("Failed to register global hotkey: \(result)") }
+
+        let sig = OSType(0x49444f66)  // "IDOf"
+        if RegisterEventHotKey(UInt32(2), UInt32(cmdKey | controlKey),
+                                EventHotKeyID(signature: sig, id: 1),
+                                GetApplicationEventTarget(), 0, &hotKeyRef) == noErr {
+            logger.info("Registered hotkey: ⌃⌘D")
+        }
+
+        setupBrightnessKeyMonitor()
+    }
+
+    private func setupBrightnessKeyMonitor() {
+        // IOHIDManager receives raw Consumer Control HID events directly from the keyboard
+        // driver — before the OS routes them to CoreBrightness. This works even when the
+        // internal display is off (where CGEventTap and NSEvent monitors don't receive events).
+        //
+        // kHIDPage_Consumer = 0x0C
+        // kHIDUsage_Csmr_BrightnessDecrement = 0x6F  (F1 / 🔅)
+        // kHIDUsage_Csmr_BrightnessIncrement = 0x70  (F2 / 🔆)
+
+        // IOHIDRequestAccess triggers the Input Monitoring TCC permission prompt.
+        // IOHIDManagerOpen alone does NOT show the prompt — the explicit request is required.
+        // IOHIDRequestAccess blocks until the user responds. For LSUIElement (menu-bar-only)
+        // apps the TCC dialog may not appear, so we call it on a background thread and
+        // schedule a re-try that installs the manager once access is granted.
+        // CGEventTap at the HID level receives NX_SYSDEFINED (media key) events.
+        // On macOS 15+, this requires Accessibility permission. Compared to IOHIDManager
+        // (which needs Input Monitoring), Accessibility is obtainable for self-signed apps.
+        let trusted = AXIsProcessTrustedWithOptions(
+            [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        )
+        guard trusted else {
+            logger.warning("Accessibility not granted — brightness key rerouting requires Accessibility permission")
+            return
+        }
+
+        // NX_SYSDEFINED = 14; matches NSEvent.EventType.systemDefined media-key events.
+        let eventMask = CGEventMask(1 << 14)
+        let callback: CGEventTapCallBack = { _, type, event, _ in
+            guard type.rawValue == 14 else { return Unmanaged.passRetained(event) }
+            let nsEvent = NSEvent(cgEvent: event)
+            // NX_SUBTYPE_AUX_CONTROL_BUTTONS = 8 (media key subtype)
+            guard nsEvent?.subtype.rawValue == 8,
+                  nsEvent?.data2 != 0,
+                  UserDefaults.standard.bool(forKey: "RerouteBrightnessKeys"),
+                  DisplayManager.shared.isInternalDisplayOff else {
+                return Unmanaged.passRetained(event)
+            }
+
+            let keyCode = Int((nsEvent?.data1 ?? 0) >> 16) & 0xFF
+            // NX_KEYTYPE_BRIGHTNESS_UP = 2, NX_KEYTYPE_BRIGHTNESS_DOWN = 3
+            let increase = keyCode == 2
+            let decrease = keyCode == 3
+            if increase || decrease {
+                DispatchQueue.main.async {
+                    BrightnessController.shared.adjustAllExternalBrightness(increase: increase)
+                }
+            }
+            return Unmanaged.passRetained(event)
+        }
+
+        // kCGHIDEventTap=0, kCGHeadInsertEventTap=0, kCGEventTapOptionListenOnly=1
+        guard let tap = CGEvent.tapCreate(
+            tap: CGEventTapLocation(rawValue: 0)!,
+            place: CGEventTapPlacement(rawValue: 0)!,
+            options: CGEventTapOptions(rawValue: 1)!,
+            eventsOfInterest: eventMask,
+            callback: callback,
+            userInfo: nil
+        ) else {
+            logger.warning("CGEventTap creation failed — brightness key rerouting unavailable")
+            return
+        }
+
+        let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        eventTap = tap
+        tapRunLoopSource = src
+        logger.info("CGEventTap installed for F1/F2 brightness key monitoring")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -60,6 +142,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         displayManager.cleanup()
         if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
         if let ref = carbonEventHandlerRef { RemoveEventHandler(ref) }
+        if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let src = tapRunLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes) }
     }
 
     // MARK: - Status Bar
@@ -223,4 +307,5 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.performClose(nil)
         // NSPopoverDelegate.popoverDidClose handles the contentViewController cleanup.
     }
+
 }
