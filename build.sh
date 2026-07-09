@@ -42,6 +42,7 @@ swiftc \
     -framework IOKit \
     -O \
     -parse-as-library \
+    Sources/KeyboardShortcut.swift \
     Sources/BrightnessController.swift \
     Sources/DisplayManager.swift \
     Sources/SceneManager.swift \
@@ -81,4 +82,4 @@ echo "  cp -r $APP_BUNDLE /Applications/"
 echo ""
 echo "⚠️  Note: You may need to grant Accessibility permissions"
 echo "   in System Settings → Privacy & Security → Accessibility"
-echo "   for the global keyboard shortcut (⌃⌘D) to work."
+echo "   for the global keyboard shortcut to work."

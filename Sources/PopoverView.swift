@@ -1,13 +1,17 @@
 import SwiftUI
 import AppKit
+import Carbon
 
 struct PopoverView: View {
     @ObservedObject var displayManager: DisplayManager
     @ObservedObject var sceneManager: SceneManager
     @ObservedObject var launchManager = LaunchManager.shared
+    @ObservedObject var shortcutSettings = GlobalShortcutSettings.shared
     var onQuit: () -> Void
 
     @State private var isHoveringQuit = false
+    @State private var isRecordingShortcut = false
+    @State private var shortcutMonitor: Any?
     @AppStorage("ShowStatusNotifications") private var showNotifications = true
     @AppStorage("RerouteBrightnessKeys") private var rerouteBrightnessKeys = false
 
@@ -71,6 +75,7 @@ struct PopoverView: View {
         }
         .frame(width: 380)
         .onAppear { resetDraft() }
+        .onDisappear { stopShortcutRecording() }
         .onChange(of: displays) { newDisplays in
             // When the actual display state changes (Apply, All On, external toggle),
             // drop any draft entries that are now stale (draft == actual, or display gone).
@@ -351,9 +356,42 @@ struct PopoverView: View {
                 subtitle: "F1/F2 adjusts external display brightness",
                 isOn: $rerouteBrightnessKeys
             )
+            Divider().padding(.vertical, 2)
+            shortcutRow
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.03)))
+    }
+
+    private var shortcutRow: some View {
+        Button {
+            startShortcutRecording()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Global Shortcut").font(.system(size: 12, weight: .medium))
+                    Text(isRecordingShortcut ? "Press a new shortcut" : "Click to record")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Text(isRecordingShortcut ? "Recording" : shortcutSettings.shortcut.displayString)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(isRecordingShortcut ? .accentColor : .secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(isRecordingShortcut ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.06))
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Global Shortcut")
     }
 
     private func settingsRow(icon: String, title: String, subtitle: String, isOn: Binding<Bool>) -> some View {
@@ -370,6 +408,44 @@ struct PopoverView: View {
                 .labelsHidden()
                 .toggleStyle(SwitchToggleStyle(tint: .accentColor))
         }
+    }
+
+    private func startShortcutRecording() {
+        guard !isRecordingShortcut else { return }
+
+        isRecordingShortcut = true
+        NSApp.activate(ignoringOtherApps: true)
+        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            handleShortcutKeyDown(event)
+            return nil
+        }
+    }
+
+    private func stopShortcutRecording() {
+        if let shortcutMonitor {
+            NSEvent.removeMonitor(shortcutMonitor)
+            self.shortcutMonitor = nil
+        }
+        isRecordingShortcut = false
+    }
+
+    private func handleShortcutKeyDown(_ event: NSEvent) {
+        if event.keyCode == UInt16(kVK_Escape) {
+            stopShortcutRecording()
+            return
+        }
+
+        guard let shortcut = KeyboardShortcut(event: event) else {
+            NSSound.beep()
+            return
+        }
+
+        guard (NSApp.delegate as? AppDelegate)?.setGlobalShortcut(shortcut) == true else {
+            NSSound.beep()
+            return
+        }
+
+        stopShortcutRecording()
     }
 
     // MARK: - Error View
