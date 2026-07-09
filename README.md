@@ -21,7 +21,7 @@ macOS clamshell mode requires closing the lid, which disables the keyboard and s
 
 - **Menubar app** — lives in your menubar, no Dock icon
 - **One-click toggle** — click the menubar icon to open the control panel
-- **Global shortcut** — press `⌃⌘D` (Ctrl+Cmd+D) to toggle instantly
+- **Global shortcut** — press `Cmd+Ctrl+D` by default, or record a custom shortcut in the popover settings
 - **Safety first** — automatically re-enables the internal display when the app quits
 - **Smart detection** — won't disable the internal display unless an external display is connected
 - **Display monitoring** — detects when displays are connected/disconnected
@@ -59,7 +59,7 @@ Grant the following permissions on first launch:
 
 | Permission | Required for |
 |---|---|
-| **Accessibility** | Global shortcut `⌃⌘D` · F1/F2 brightness rerouting |
+| **Accessibility** | Global shortcut · F1/F2 brightness rerouting |
 
 1. Open **System Settings** → **Privacy & Security** → **Accessibility**
 2. Add `InternalDisplayOff` and enable the toggle
@@ -70,7 +70,7 @@ Grant the following permissions on first launch:
 
 | Shortcut | Action |
 |----------|--------|
-| `⌃⌘D` | Toggle internal display on/off |
+| `Cmd+Ctrl+D` | Toggle internal display on/off by default; customizable in settings |
 | `F1` | Decrease external display brightness (when internal is off + Reroute enabled) |
 | `F2` | Increase external display brightness (when internal is off + Reroute enabled) |
 
@@ -90,6 +90,7 @@ Grant the following permissions on first launch:
 ## Changelog
 
 ### v1.02
+- **Custom global shortcut:** The popover settings now include a Global Shortcut row. Click it, press a new shortcut, and the app re-registers it immediately. `Cmd+Opt+Ctrl+Shift` is displayed as `Hyper + <key>`.
 - **Sleep/wake persistence:** Internal display off state is now saved before sleep and automatically re-applied 2 seconds after wake, so the setting no longer resets after locking the screen or sleeping.
 - **F1/F2 brightness rerouting:** When the internal display is off and "Reroute Brightness Keys" is enabled in settings, F1/F2 (without Fn) adjusts external display brightness via `CGEventTap`. Supports both DisplayServices (Apple/USB-C monitors) and DDC/CI (third-party monitors via IOAVService).
 - **New app icon:** Redesigned icon — dark background with a MacBook silhouette showing a dark (off) screen and a power symbol.

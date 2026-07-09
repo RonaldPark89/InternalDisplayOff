@@ -10,8 +10,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var cancellables = Set<AnyCancellable>()
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "InternalDisplayOff", category: "AppDelegate")
 
+    private let hotKeySignature = OSType(0x49444f66)  // "IDOf"
+    private let hotKeyID = UInt32(1)
     private var hotKeyRef: EventHotKeyRef?
     private var carbonEventHandlerRef: EventHandlerRef?
+    private var registeredShortcut: KeyboardShortcut?
     private var eventTap: CFMachPort?
     private var tapRunLoopSource: CFRunLoopSource?
 
@@ -36,7 +39,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func setupGlobalHotKey() {
-        // id=1 → ⌃⌘D (toggle internal display)
+        installHotKeyHandler()
+        if !registerGlobalHotKey(GlobalShortcutSettings.shared.shortcut),
+           GlobalShortcutSettings.shared.shortcut != .defaultShortcut,
+           registerGlobalHotKey(.defaultShortcut) {
+            GlobalShortcutSettings.shared.save(.defaultShortcut)
+        }
+
+        setupBrightnessKeyMonitor()
+    }
+
+    private func installHotKeyHandler() {
+        guard carbonEventHandlerRef == nil else { return }
+
         let eventSpec = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))]
 
         let handler: EventHandlerUPP = { (_, event, _) -> OSStatus in
@@ -45,7 +60,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                               UInt32(typeEventHotKeyID), nil,
                               MemoryLayout<EventHotKeyID>.size, nil, &hkID)
             DispatchQueue.main.async {
-                if hkID.id == 1 {
+                if hkID.id == (NSApp.delegate as? AppDelegate)?.hotKeyID {
                     DisplayManager.shared.toggleInternalDisplay()
                     (NSApp.delegate as? AppDelegate)?.updateStatusIcon()
                 }
@@ -54,15 +69,51 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         InstallEventHandler(GetApplicationEventTarget(), handler, 1, eventSpec, nil, &carbonEventHandlerRef)
+    }
 
-        let sig = OSType(0x49444f66)  // "IDOf"
-        if RegisterEventHotKey(UInt32(2), UInt32(cmdKey | controlKey),
-                                EventHotKeyID(signature: sig, id: 1),
-                                GetApplicationEventTarget(), 0, &hotKeyRef) == noErr {
-            logger.info("Registered hotkey: ⌃⌘D")
+    @discardableResult
+    func setGlobalShortcut(_ shortcut: KeyboardShortcut) -> Bool {
+        guard registerGlobalHotKey(shortcut) else {
+            ToastManager.shared.showToast(message: "Shortcut is already in use")
+            return false
         }
 
-        setupBrightnessKeyMonitor()
+        GlobalShortcutSettings.shared.save(shortcut)
+        updateStatusIcon()
+        ToastManager.shared.showToast(message: "Shortcut set to \(shortcut.displayString)")
+        return true
+    }
+
+    private func registerGlobalHotKey(_ shortcut: KeyboardShortcut) -> Bool {
+        let previousShortcut = registeredShortcut
+        if let ref = hotKeyRef {
+            UnregisterEventHotKey(ref)
+            hotKeyRef = nil
+            registeredShortcut = nil
+        }
+
+        var newHotKeyRef: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            shortcut.keyCode,
+            shortcut.carbonModifiers,
+            EventHotKeyID(signature: hotKeySignature, id: hotKeyID),
+            GetApplicationEventTarget(),
+            0,
+            &newHotKeyRef
+        )
+
+        guard status == noErr, let newHotKeyRef else {
+            logger.error("Failed to register hotkey \(shortcut.displayString, privacy: .public): \(status)")
+            if let previousShortcut {
+                _ = registerGlobalHotKey(previousShortcut)
+            }
+            return false
+        }
+
+        hotKeyRef = newHotKeyRef
+        registeredShortcut = shortcut
+        logger.info("Registered hotkey: \(shortcut.displayString, privacy: .public)")
+        return true
     }
 
     private func setupBrightnessKeyMonitor() {
@@ -275,12 +326,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         button.image = highContrastImage
         button.contentTintColor = nil
 
+        let shortcut = GlobalShortcutSettings.shared.shortcut.displayString
         if onCount == totalCount || totalCount == 0 {
-            button.toolTip = "All Displays On (⌃⌘D toggles built-in)"
+            button.toolTip = "All Displays On (\(shortcut) toggles built-in)"
         } else if isOff {
-            button.toolTip = "Internal Display: OFF (⌃⌘D to restore)"
+            button.toolTip = "Internal Display: OFF (\(shortcut) to restore)"
         } else {
-            button.toolTip = "\(onCount)/\(totalCount) displays on (⌃⌘D toggles built-in)"
+            button.toolTip = "\(onCount)/\(totalCount) displays on (\(shortcut) toggles built-in)"
         }
     }
 
