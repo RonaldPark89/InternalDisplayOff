@@ -1,6 +1,7 @@
 import Cocoa
 
 @main
+@MainActor
 struct InternalDisplayOffEntry {
     static func main() {
         let app = NSApplication.shared

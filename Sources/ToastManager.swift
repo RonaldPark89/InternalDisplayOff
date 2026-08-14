@@ -1,6 +1,7 @@
-import Cocoa
+@preconcurrency import Cocoa
 
-class ToastManager {
+@MainActor
+final class ToastManager {
     static let shared = ToastManager()
     private var window: NSWindow?
 
@@ -8,9 +9,7 @@ class ToastManager {
         let show = UserDefaults.standard.object(forKey: "ShowStatusNotifications") as? Bool ?? true
         guard show else { return }
         
-        DispatchQueue.main.async {
-            self.displayToast(message: message)
-        }
+        displayToast(message: message)
     }
 
     private func displayToast(message: String) {
@@ -82,7 +81,9 @@ class ToastManager {
                     context.duration = 0.3
                     panel.animator().alphaValue = 0.0
                 }) {
-                    panel.close()
+                    Task { @MainActor in
+                        panel.close()
+                    }
                 }
             }
         }

@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 struct PopoverView: View {
     @ObservedObject var displayManager: DisplayManager
     @ObservedObject var sceneManager: SceneManager
@@ -40,7 +41,7 @@ struct PopoverView: View {
     }
     private func resetDraft() { draftEnabled.removeAll() }
     private func applyDraft() {
-        let state = Dictionary(uniqueKeysWithValues: displays.map { (String($0.id), isDraftOn($0.id)) })
+        let state = Dictionary(uniqueKeysWithValues: displays.map { ($0.persistenceKey, isDraftOn($0.id)) })
         displayManager.applySceneState(state, sceneName: "Custom")
     }
 
@@ -70,7 +71,10 @@ struct PopoverView: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 380)
-        .onAppear { resetDraft() }
+        .onAppear {
+            resetDraft()
+            sceneManager.migrateLegacyScenes(using: displays)
+        }
         .onChange(of: displays) { newDisplays in
             // When the actual display state changes (Apply, All On, external toggle),
             // drop any draft entries that are now stale (draft == actual, or display gone).
@@ -82,6 +86,7 @@ struct PopoverView: View {
                     draftEnabled.removeValue(forKey: id)
                 }
             }
+            sceneManager.migrateLegacyScenes(using: newDisplays)
         }
     }
 
@@ -436,7 +441,7 @@ struct PopoverView: View {
         if response == .alertFirstButtonReturn {
             let name = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { return }
-            let state = Dictionary(uniqueKeysWithValues: displays.map { (String($0.id), $0.isEnabled) })
+            let state = Dictionary(uniqueKeysWithValues: displays.map { ($0.persistenceKey, $0.isEnabled) })
             let scene = DisplayScene(
                 id: "user-\(Int(Date().timeIntervalSince1970))",
                 name: name, state: state, isBuiltIn: false
@@ -586,7 +591,7 @@ private struct SceneChip: View {
             // Mini display-state icon
             HStack(spacing: 2) {
                 ForEach(displays) { d in
-                    let isOnInScene = scene.state[String(d.id)] ?? false
+                    let isOnInScene = scene.targetEnabled(for: d) ?? false
                     RoundedRectangle(cornerRadius: 1)
                         .fill(isOnInScene ? Color.primary.opacity(isActive ? 1.0 : 0.7) : Color.clear)
                         .overlay(

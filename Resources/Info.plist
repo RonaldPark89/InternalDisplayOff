@@ -34,7 +34,5 @@
 	<string>AppIcon</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Ronald Park. All rights reserved.</string>
-	<key>NSInputMonitoringUsageDescription</key>
-	<string>Required to detect F1/F2 brightness keys for external display control when the built-in display is off.</string>
 </dict>
 </plist>

@@ -1,11 +1,11 @@
+@preconcurrency import CoreGraphics
 import Foundation
-import IOKit
-import CoreGraphics
+@preconcurrency import IOKit
 import OSLog
 
 private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "InternalDisplayOff", category: "Brightness")
 
-final class BrightnessController {
+actor BrightnessController {
     static let shared = BrightnessController()
 
     private typealias DSGetFn   = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
@@ -14,53 +14,66 @@ final class BrightnessController {
     private typealias AVWriteFn = @convention(c) (UnsafeMutableRawPointer, UInt32, UInt32, UnsafeMutableRawPointer, Int) -> IOReturn
     private typealias AVReadFn  = @convention(c) (UnsafeMutableRawPointer, UInt32, UInt32, UnsafeMutableRawPointer, Int) -> IOReturn
 
-    private let dsLib = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY)
-    private let ioLib = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY)
+    private let dsLib: UnsafeMutableRawPointer?
+    private let ioLib: UnsafeMutableRawPointer?
+    private let dsGet: DSGetFn?
+    private let dsSet: DSSetFn?
+    private let avNew: AVNewFn?
+    private let avWrite: AVWriteFn?
+    private let avRead: AVReadFn?
 
-    private lazy var dsGet:  DSGetFn?  = sym("DisplayServicesGetBrightness", from: dsLib)
-    private lazy var dsSet:  DSSetFn?  = sym("DisplayServicesSetBrightness", from: dsLib)
-    private lazy var avNew:  AVNewFn?  = sym("IOAVServiceCreateWithService", from: ioLib)
-                                      ?? sym("IOAVServiceCreateWithService", from: nil)
-    private lazy var avWrite: AVWriteFn? = sym("IOAVServiceWriteI2C", from: ioLib)
-                                        ?? sym("IOAVServiceWriteI2C", from: nil)
-    private lazy var avRead:  AVReadFn?  = sym("IOAVServiceReadI2C",  from: ioLib)
-                                        ?? sym("IOAVServiceReadI2C",  from: nil)
-
-    private func sym<T>(_ name: String, from handle: UnsafeMutableRawPointer?) -> T? {
+    private static func sym<T>(_ name: String, from handle: UnsafeMutableRawPointer?) -> T? {
         guard let handle, let s = dlsym(handle, name) else { return nil }
         return unsafeBitCast(s, to: T.self)
     }
 
     // Discovered IOAVService refs from DCPAVServiceProxy (one per physical port with a display).
-    // Stored as raw pointers; owned via Create Rule — intentionally not released (app lifetime).
+    // Stored as raw pointers and released whenever the display topology changes.
     private var avServices: [UnsafeMutableRawPointer]? = nil
     private var dsCapable: [CGDirectDisplayID: Bool] = [:]
-    private let queue = DispatchQueue(label: "com.internalDisplayOff.brightness", qos: .userInteractive)
 
-    private init() {}
+    private init() {
+        let displayServices = dlopen(
+            "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices",
+            RTLD_LAZY
+        )
+        let ioKit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY)
+
+        dsLib = displayServices
+        ioLib = ioKit
+        dsGet = Self.sym("DisplayServicesGetBrightness", from: displayServices)
+        dsSet = Self.sym("DisplayServicesSetBrightness", from: displayServices)
+        avNew = Self.sym("IOAVServiceCreateWithService", from: ioKit)
+        avWrite = Self.sym("IOAVServiceWriteI2C", from: ioKit)
+        avRead = Self.sym("IOAVServiceReadI2C", from: ioKit)
+    }
 
     // MARK: - Public
 
     /// Adjusts brightness on all enabled external displays by one step.
-    func adjustAllExternalBrightness(increase: Bool) {
-        let externals = DisplayManager.shared.displays.filter { !$0.isBuiltin && $0.isEnabled }
-        queue.async { [self] in
-            var anyNeedsDDC = false
-            for d in externals {
-                if !tryDisplayServices(d.id, increase: increase) { anyNeedsDDC = true }
+    func adjustExternalBrightness(displayIDs: [CGDirectDisplayID], increase: Bool) {
+        var anyNeedsDDC = false
+        for displayID in displayIDs {
+            if !tryDisplayServices(displayID, increase: increase) {
+                anyNeedsDDC = true
             }
-            // DDC path for non-Apple / non-DisplayServices monitors
-            if anyNeedsDDC {
-                for svc in discoverAVServices() { tryDDC(svc, increase: increase) }
+        }
+        // DDC path for non-Apple / non-DisplayServices monitors.
+        if anyNeedsDDC {
+            for service in discoverAVServices() {
+                tryDDC(service, increase: increase)
             }
         }
     }
 
     func invalidateCache() {
-        queue.async { [self] in
-            avServices = nil
-            dsCapable.removeAll()
+        if let services = avServices {
+            for service in services {
+                Unmanaged<CFTypeRef>.fromOpaque(service).release()
+            }
         }
+        avServices = nil
+        dsCapable.removeAll()
     }
 
     // MARK: - DisplayServices (Apple Studio Display, Pro Display XDR, some USB-C monitors)

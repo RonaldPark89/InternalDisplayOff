@@ -2,15 +2,19 @@ import Foundation
 import ServiceManagement
 import OSLog
 
-class LaunchManager: ObservableObject {
+@MainActor
+final class LaunchManager: ObservableObject {
     static let shared = LaunchManager()
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "InternalDisplayOff", category: "LaunchManager")
 
     @Published var isLaunchAtLoginEnabled: Bool {
         didSet {
-            updateLaunchAtLogin(enabled: isLaunchAtLoginEnabled)
+            if !isSynchronizingStatus {
+                updateLaunchAtLogin(enabled: isLaunchAtLoginEnabled)
+            }
         }
     }
+    private var isSynchronizingStatus = false
 
     private init() {
         // Check current status
@@ -34,18 +38,21 @@ class LaunchManager: ObservableObject {
             }
         } catch {
             logger.error("Failed to update launch at login status: \(error.localizedDescription)")
-            // Reset to actual status if failed
-            DispatchQueue.main.async {
-                self.isLaunchAtLoginEnabled = service.status == .enabled
-            }
+            synchronizeStatus(service.status == .enabled)
         }
+    }
+
+    private func synchronizeStatus(_ enabled: Bool) {
+        isSynchronizingStatus = true
+        isLaunchAtLoginEnabled = enabled
+        isSynchronizingStatus = false
     }
     
     /// Sync status with system (useful when coming back from background)
     func refreshStatus() {
         let currentStatus = SMAppService.mainApp.status == .enabled
         if isLaunchAtLoginEnabled != currentStatus {
-            isLaunchAtLoginEnabled = currentStatus
+            synchronizeStatus(currentStatus)
         }
     }
 }

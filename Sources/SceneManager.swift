@@ -4,11 +4,16 @@ import Combine
 struct DisplayScene: Identifiable, Codable {
     let id: String
     var name: String
-    var state: [String: Bool]  // String(CGDirectDisplayID) -> isEnabled
+    var state: [String: Bool]  // DisplayState.persistenceKey -> isEnabled
     var isBuiltIn: Bool
+
+    func targetEnabled(for display: DisplayState) -> Bool? {
+        state[display.persistenceKey] ?? state[String(display.id)]
+    }
 }
 
-class SceneManager: ObservableObject {
+@MainActor
+final class SceneManager: ObservableObject {
     static let shared = SceneManager()
 
     @Published var userScenes: [DisplayScene] = []
@@ -25,12 +30,12 @@ class SceneManager: ObservableObject {
         guard !displays.isEmpty else { return [] }
 
         var scenes: [DisplayScene] = []
-        let allState = Dictionary(uniqueKeysWithValues: displays.map { (String($0.id), true) })
+        let allState = Dictionary(uniqueKeysWithValues: displays.map { ($0.persistenceKey, true) })
         scenes.append(DisplayScene(id: "builtin-all", name: "All Displays", state: allState, isBuiltIn: true))
 
         let externals = displays.filter { !$0.isBuiltin }
             .sorted { $0.physicalSizeInches > $1.physicalSizeInches }
-        let internalKey = displays.first(where: { $0.isBuiltin }).map { String($0.id) }
+        let internalKey = displays.first(where: { $0.isBuiltin }).map(\.persistenceKey)
 
         for (index, external) in externals.enumerated() {
             let sizeLabel = external.physicalSizeInches > 0
@@ -41,8 +46,8 @@ class SceneManager: ObservableObject {
                 Int($0.physicalSizeInches.rounded()) == Int(external.physicalSizeInches.rounded())
             }.count
             let label = sameSize > 1 ? "\(sizeLabel) (\(index + 1))" : sizeLabel
-            var state = Dictionary(uniqueKeysWithValues: displays.map { (String($0.id), false) })
-            state[String(external.id)] = true
+            var state = Dictionary(uniqueKeysWithValues: displays.map { ($0.persistenceKey, false) })
+            state[external.persistenceKey] = true
             scenes.append(DisplayScene(
                 id: "builtin-focus-\(external.id)",
                 name: "Focus on \(label)",
@@ -52,12 +57,12 @@ class SceneManager: ObservableObject {
         }
 
         if !externals.isEmpty, let iKey = internalKey {
-            var internalState = Dictionary(uniqueKeysWithValues: displays.map { (String($0.id), false) })
+            var internalState = Dictionary(uniqueKeysWithValues: displays.map { ($0.persistenceKey, false) })
             internalState[iKey] = true
             scenes.append(DisplayScene(id: "builtin-internal-only", name: "Internal Only",
                                        state: internalState, isBuiltIn: true))
 
-            var externalState = Dictionary(uniqueKeysWithValues: displays.map { (String($0.id), true) })
+            var externalState = Dictionary(uniqueKeysWithValues: displays.map { ($0.persistenceKey, true) })
             externalState[iKey] = false
             scenes.append(DisplayScene(id: "builtin-externals-only", name: "Externals Only",
                                        state: externalState, isBuiltIn: true))
@@ -73,7 +78,29 @@ class SceneManager: ObservableObject {
     // Returns the scene whose on/off state exactly matches all current displays.
     func matchedScene(displays: [DisplayState], among scenes: [DisplayScene]) -> DisplayScene? {
         scenes.first { scene in
-            displays.allSatisfy { d in scene.state[String(d.id)] == d.isEnabled }
+            displays.allSatisfy { display in
+                scene.targetEnabled(for: display) == display.isEnabled
+            }
+        }
+    }
+
+    /// Converts legacy numeric scene keys when their original session IDs are
+    /// still present. New and already-migrated keys are left untouched.
+    func migrateLegacyScenes(using displays: [DisplayState]) {
+        var changed = false
+        for sceneIndex in userScenes.indices {
+            for display in displays {
+                let legacyKey = String(display.id)
+                guard userScenes[sceneIndex].state[display.persistenceKey] == nil,
+                      let value = userScenes[sceneIndex].state.removeValue(forKey: legacyKey) else {
+                    continue
+                }
+                userScenes[sceneIndex].state[display.persistenceKey] = value
+                changed = true
+            }
+        }
+        if changed {
+            saveToUserDefaults()
         }
     }
 
