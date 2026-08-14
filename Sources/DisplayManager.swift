@@ -14,6 +14,10 @@ struct DisplayState: Identifiable, Equatable {
     let resolution: CGSize
     var frame: CGRect
     var isEnabled: Bool
+    // True when the display is enabled but mirroring another one. Mirrored
+    // displays are absent from NSScreen.screens, so they must be discovered
+    // through the CoreGraphics online list instead.
+    var isMirrored: Bool = false
 
     var sizeLabel: String {
         physicalSizeInches > 0 ? "\(Int(physicalSizeInches.rounded()))\"" : (isBuiltin ? "Built-in" : "Display")
@@ -454,8 +458,22 @@ final class DisplayManager: ObservableObject {
     }
 
     // Applies multiple enable/disable changes in one display configuration session.
-    private func configureDisplays(_ changes: [(CGDirectDisplayID, Bool)]) -> CGError {
+    private func configureDisplays(_ rawChanges: [(CGDirectDisplayID, Bool)]) -> CGError {
         guard let configEnabled = PrivateAPI.ConfigureDisplayEnabled else { return .failure }
+
+        // Configuring a display into the state it is already in returns an error that
+        // fails the whole transaction, so drop no-ops. The online list is the ground
+        // truth here: SLSConfigureDisplayEnabled(0) removes a display from it.
+        let onlineIDs = onlineDisplayIDs()
+        let changes = rawChanges.filter { id, enabled in
+            let alreadyEnabled = onlineIDs.contains(id)
+            if alreadyEnabled == enabled {
+                logger.debug("Skipping no-op display change: \(id) -> \(enabled)")
+                return false
+            }
+            return true
+        }
+        guard !changes.isEmpty else { return .success }
 
         // macOS fires one reconfiguration event per disabled display, not one per
         // transaction. Without tracking, refreshDisplayInfo() sees a display that is
@@ -680,6 +698,37 @@ final class DisplayManager: ObservableObject {
             }
         }
 
+        // NSScreen.screens omits displays that mirror another display, even though
+        // they are powered and enabled. Treating them as missing made the app read
+        // a mirroring built-in display as "off". The CoreGraphics online list is the
+        // ground truth: SLSConfigureDisplayEnabled(0) removes a display from it.
+        for displayID in onlineDisplayIDs() where !seenIDs.contains(displayID) {
+            seenIDs.insert(displayID)
+            let isBuiltin = CGDisplayIsBuiltin(displayID) != 0
+            if isBuiltin { foundInternalID = displayID }
+
+            let inches = sizeInInches(displayID)
+            let bounds = CGDisplayBounds(displayID)
+            let state = DisplayState(
+                id: displayID,
+                identity: DisplayIdentity(displayID: displayID),
+                name: isBuiltin
+                    ? "Built-in Display"
+                    : (inches > 0 ? "\(Int(inches.rounded()))\" Display" : "External Display"),
+                isBuiltin: isBuiltin,
+                physicalSizeInches: inches,
+                resolution: bounds.size,
+                frame: bounds,
+                isEnabled: true,
+                isMirrored: CGDisplayMirrorsDisplay(displayID) != kCGNullDirectDisplay
+            )
+            logger.debug("Online display \(displayID) not in NSScreen (mirrored: \(state.isMirrored))")
+            enabledDisplays.append(state)
+            if !pendingDisabledIDs.contains(displayID) {
+                disabledDisplayCache.removeValue(forKey: displayID)
+            }
+        }
+
         // When the primary display changes (e.g. external disabled → internal becomes main),
         // macOS shifts the coordinate origin to the new primary. Cached frames for disabled
         // displays are still in the old coordinate system, causing them to overlap with the
@@ -720,7 +769,9 @@ final class DisplayManager: ObservableObject {
 
         if let id = foundInternalID {
             cacheInternalDisplay(id)
-            if isInternalDisplayOff {
+            // Don't clear the flag from an intermediate reconfiguration event while
+            // a disable transaction for this display is still in flight.
+            if isInternalDisplayOff && !pendingDisabledIDs.contains(id) {
                 isInternalDisplayOff = false
             }
         }
@@ -871,6 +922,17 @@ final class DisplayManager: ObservableObject {
             return
         }
 
+        // Already enabled (e.g. mirroring, or the flag went stale across a reboot):
+        // enabling it again fails the configuration transaction, so just resync.
+        if onlineDisplayIDs().contains(displayID) {
+            logger.info("Internal display \(displayID) is already enabled; resyncing state.")
+            disabledDisplayCache.removeValue(forKey: displayID)
+            isInternalDisplayOff = false
+            lastError = nil
+            refreshDisplayInfo()
+            return
+        }
+
         logger.info("Enabling internal display \(displayID)")
         var configRef: CGDisplayConfigRef?
         var result = CGBeginDisplayConfiguration(&configRef)
@@ -898,13 +960,10 @@ final class DisplayManager: ObservableObject {
 
     @discardableResult
     func forceEnableFromBackup() -> Bool {
+        // Online, not NSScreen: a mirroring built-in display is enabled but hidden
+        // from NSScreen.screens, and needs no recovery.
         if !isInternalDisplayOff,
-           NSScreen.screens.contains(where: {
-               guard let id = $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
-                   return false
-               }
-               return CGDisplayIsBuiltin(id) != 0
-           }) {
+           onlineDisplayIDs().contains(where: { CGDisplayIsBuiltin($0) != 0 }) {
             return true
         }
         guard let displayID = getInternalDisplayID() else {
@@ -970,7 +1029,10 @@ final class DisplayManager: ObservableObject {
         performEmergencyCheck()
     }
 
-    private func performEmergencyCheck() {
+    /// Externals the user can actually see something on: named NSScreen displays,
+    /// plus online externals that mirror another display (mirrors are omitted from
+    /// NSScreen.screens but are still showing content).
+    private func visibleExternalDisplayCount() -> Int {
         var validExternals = 0
         var seenIDs = Set<CGDirectDisplayID>()
         for screen in NSScreen.screens {
@@ -983,6 +1045,16 @@ final class DisplayManager: ObservableObject {
                 }
             }
         }
+        for id in onlineDisplayIDs() where !seenIDs.contains(id) {
+            if CGDisplayIsBuiltin(id) == 0, CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay {
+                validExternals += 1
+            }
+        }
+        return validExternals
+    }
+
+    private func performEmergencyCheck() {
+        let validExternals = visibleExternalDisplayCount()
         if (isInternalDisplayOff || wasInternalDisplayOffBeforeSleep) && validExternals == 0 {
             logger.warning("Emergency check: no external displays. Restoring internal display.")
             if forceEnableFromBackup() {

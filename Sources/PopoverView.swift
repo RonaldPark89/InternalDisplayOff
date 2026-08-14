@@ -226,12 +226,22 @@ struct PopoverView: View {
         .padding(.bottom, 0)
     }
 
+    // The frame used to lay a display out in the spatial map.
+    private func layoutFrame(for display: DisplayState) -> CGRect {
+        // Fallback for disabled displays that have no cached frame
+        var frame = display.frame == .zero ? CGRect(x: 0, y: 0, width: 200, height: 125) : display.frame
+        // A mirroring display reports the bounds of the display it mirrors, which
+        // would stack the two tiles exactly on top of each other and make only the
+        // topmost one tappable. Draw it just below its mirror source instead.
+        if display.isMirrored {
+            frame.origin.y -= frame.height * 1.08
+        }
+        return frame
+    }
+
     // Compute each display's rect in the spatial map container, preserving real-world arrangement.
     private func thumbnailRect(for display: DisplayState, containerSize: CGSize) -> CGRect {
-        let frames = displays.map { d -> CGRect in
-            // Fallback for disabled displays that have no cached frame
-            d.frame == .zero ? CGRect(x: 0, y: 0, width: 200, height: 125) : d.frame
-        }
+        let frames = displays.map(layoutFrame(for:))
         guard !frames.isEmpty else {
             return CGRect(x: containerSize.width / 2 - 40, y: containerSize.height / 2 - 25, width: 80, height: 50)
         }
@@ -252,7 +262,7 @@ struct PopoverView: View {
         let offsetY_base = padding + (availH - scaledH) / 2
 
         // Use this display's effective frame
-        let df = display.frame == .zero ? CGRect(x: 0, y: 0, width: 200, height: 125) : display.frame
+        let df = layoutFrame(for: display)
 
         let x = (df.minX - bounds.minX) * scale + offsetX
         // AppKit y-up → SwiftUI y-down
@@ -509,7 +519,9 @@ private struct DisplayThumbnail: View {
     // Label reflects the draft (intended) state, with an arrow when changing
     private var statusLabel: String {
         if willChange { return draftOn ? "→ ON" : "→ OFF" }
-        return draftOn ? (display.isBuiltin ? "built-in" : "on") : "OFF"
+        guard draftOn else { return "OFF" }
+        if display.isMirrored { return "mirrored" }
+        return display.isBuiltin ? "built-in" : "on"
     }
 
     private var borderColor: Color {
