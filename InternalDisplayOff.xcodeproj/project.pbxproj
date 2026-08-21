@@ -14,6 +14,9 @@
 		AA00000000000000000004 /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000004 /* PopoverView.swift */; };
 		AA00000000000000000008 /* LaunchManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000008 /* LaunchManager.swift */; };
 		AA0000000000000000000A /* SceneManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000A /* SceneManager.swift */; };
+		AA0000000000000000000B /* BrightnessController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000B /* BrightnessController.swift */; };
+		AA0000000000000000000C /* DisplayIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000C /* DisplayIdentity.swift */; };
+		AA0000000000000000000D /* DisplayAutomationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000D /* DisplayAutomationPolicy.swift */; };
 		AA00000000000000000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000009 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -28,6 +31,9 @@
 		AB00000000000000000008 /* LaunchManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchManager.swift; sourceTree = "<group>"; };
 		AB00000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AB0000000000000000000A /* SceneManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneManager.swift; sourceTree = "<group>"; };
+		AB0000000000000000000B /* BrightnessController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrightnessController.swift; sourceTree = "<group>"; };
+		AB0000000000000000000C /* DisplayIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayIdentity.swift; sourceTree = "<group>"; };
+		AB0000000000000000000D /* DisplayAutomationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayAutomationPolicy.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -53,6 +59,9 @@
 		AC00000000000000000002 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				AB0000000000000000000D /* DisplayAutomationPolicy.swift */,
+				AB0000000000000000000B /* BrightnessController.swift */,
+				AB0000000000000000000C /* DisplayIdentity.swift */,
 				529916282FB16DA4000C53D8 /* ToastManager.swift */,
 				AB00000000000000000001 /* InternalDisplayOffApp.swift */,
 				AB00000000000000000002 /* AppDelegate.swift */,
@@ -152,6 +161,9 @@
 				AA00000000000000000004 /* PopoverView.swift in Sources */,
 				AA00000000000000000008 /* LaunchManager.swift in Sources */,
 				AA0000000000000000000A /* SceneManager.swift in Sources */,
+				AA0000000000000000000B /* BrightnessController.swift in Sources */,
+				AA0000000000000000000C /* DisplayIdentity.swift in Sources */,
+				AA0000000000000000000D /* DisplayAutomationPolicy.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -184,7 +196,9 @@
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.0;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -207,7 +221,9 @@
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.0;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
@@ -229,7 +245,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.ronald.InternalDisplayOff;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -251,7 +267,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.ronald.InternalDisplayOff;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};

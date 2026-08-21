@@ -45,12 +45,12 @@ chmod +x build.sh
 open build/InternalDisplayOff.app
 
 # Or install to Applications
-cp -r build/InternalDisplayOff.app /Applications/
+ditto build/InternalDisplayOff.app /Applications/InternalDisplayOff.app
 ```
 
 **Requirements:**
 - macOS 13.0 (Ventura) or later
-- Xcode Command Line Tools (`xcode-select --install`)
+- Xcode 16 or later, or matching Swift 6 Command Line Tools
 - An external display connected (for the toggle to work)
 
 ## Permissions
@@ -59,10 +59,14 @@ Grant the following permissions on first launch:
 
 | Permission | Required for |
 |---|---|
-| **Accessibility** | Global shortcut `⌃⌘D` · F1/F2 brightness rerouting |
+| **Accessibility** | Optional F1/F2 brightness rerouting |
 
-1. Open **System Settings** → **Privacy & Security** → **Accessibility**
-2. Add `InternalDisplayOff` and enable the toggle
+The app asks for Accessibility access only after you enable **Reroute Brightness Keys**.
+The global `⌃⌘D` shortcut and display toggling do not require this permission.
+
+1. Enable **Reroute Brightness Keys** in the app.
+2. Open **System Settings** → **Privacy & Security** → **Accessibility** if macOS does not take you there automatically.
+3. Enable `InternalDisplayOff`.
 
 > **Note:** The app uses a local self-signed certificate so permissions persist across rebuilds. If you build from source on a new machine, create a **"InternalDisplayOff Dev"** Code Signing certificate in Keychain Access first (see `build.sh` for instructions).
 
@@ -83,7 +87,7 @@ Grant the following permissions on first launch:
 ## Technical Notes
 
 - Uses `CGSConfigureDisplayEnabled` (private API) — not App Store compatible, but works great for personal use
-- The internal display ID is cached on launch and backed up to `~/.internal_display_backup_id` so it can be restored even after being disabled or across reboots
+- Display recovery and saved scenes use ColorSync display UUIDs, which remain stable when WindowServer assigns new session display IDs
 - Uses `CGGetOnlineDisplayList` to detect displays (includes disabled ones)
 - To update the displayed version, edit `CFBundleShortVersionString` in `Resources/Info.plist`
 

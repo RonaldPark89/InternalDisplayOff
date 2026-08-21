@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 struct PopoverView: View {
     @ObservedObject var displayManager: DisplayManager
     @ObservedObject var sceneManager: SceneManager
@@ -40,7 +41,7 @@ struct PopoverView: View {
     }
     private func resetDraft() { draftEnabled.removeAll() }
     private func applyDraft() {
-        let state = Dictionary(uniqueKeysWithValues: displays.map { (String($0.id), isDraftOn($0.id)) })
+        let state = Dictionary(uniqueKeysWithValues: displays.map { ($0.persistenceKey, isDraftOn($0.id)) })
         displayManager.applySceneState(state, sceneName: "Custom")
     }
 
@@ -70,7 +71,10 @@ struct PopoverView: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 380)
-        .onAppear { resetDraft() }
+        .onAppear {
+            resetDraft()
+            sceneManager.migrateLegacyScenes(using: displays)
+        }
         .onChange(of: displays) { newDisplays in
             // When the actual display state changes (Apply, All On, external toggle),
             // drop any draft entries that are now stale (draft == actual, or display gone).
@@ -82,6 +86,7 @@ struct PopoverView: View {
                     draftEnabled.removeValue(forKey: id)
                 }
             }
+            sceneManager.migrateLegacyScenes(using: newDisplays)
         }
     }
 
@@ -221,12 +226,22 @@ struct PopoverView: View {
         .padding(.bottom, 0)
     }
 
+    // The frame used to lay a display out in the spatial map.
+    private func layoutFrame(for display: DisplayState) -> CGRect {
+        // Fallback for disabled displays that have no cached frame
+        var frame = display.frame == .zero ? CGRect(x: 0, y: 0, width: 200, height: 125) : display.frame
+        // A mirroring display reports the bounds of the display it mirrors, which
+        // would stack the two tiles exactly on top of each other and make only the
+        // topmost one tappable. Draw it just below its mirror source instead.
+        if display.isMirrored {
+            frame.origin.y -= frame.height * 1.08
+        }
+        return frame
+    }
+
     // Compute each display's rect in the spatial map container, preserving real-world arrangement.
     private func thumbnailRect(for display: DisplayState, containerSize: CGSize) -> CGRect {
-        let frames = displays.map { d -> CGRect in
-            // Fallback for disabled displays that have no cached frame
-            d.frame == .zero ? CGRect(x: 0, y: 0, width: 200, height: 125) : d.frame
-        }
+        let frames = displays.map(layoutFrame(for:))
         guard !frames.isEmpty else {
             return CGRect(x: containerSize.width / 2 - 40, y: containerSize.height / 2 - 25, width: 80, height: 50)
         }
@@ -247,7 +262,7 @@ struct PopoverView: View {
         let offsetY_base = padding + (availH - scaledH) / 2
 
         // Use this display's effective frame
-        let df = display.frame == .zero ? CGRect(x: 0, y: 0, width: 200, height: 125) : display.frame
+        let df = layoutFrame(for: display)
 
         let x = (df.minX - bounds.minX) * scale + offsetX
         // AppKit y-up → SwiftUI y-down
@@ -436,7 +451,7 @@ struct PopoverView: View {
         if response == .alertFirstButtonReturn {
             let name = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { return }
-            let state = Dictionary(uniqueKeysWithValues: displays.map { (String($0.id), $0.isEnabled) })
+            let state = Dictionary(uniqueKeysWithValues: displays.map { ($0.persistenceKey, $0.isEnabled) })
             let scene = DisplayScene(
                 id: "user-\(Int(Date().timeIntervalSince1970))",
                 name: name, state: state, isBuiltIn: false
@@ -504,7 +519,9 @@ private struct DisplayThumbnail: View {
     // Label reflects the draft (intended) state, with an arrow when changing
     private var statusLabel: String {
         if willChange { return draftOn ? "→ ON" : "→ OFF" }
-        return draftOn ? (display.isBuiltin ? "built-in" : "on") : "OFF"
+        guard draftOn else { return "OFF" }
+        if display.isMirrored { return "mirrored" }
+        return display.isBuiltin ? "built-in" : "on"
     }
 
     private var borderColor: Color {
@@ -586,7 +603,7 @@ private struct SceneChip: View {
             // Mini display-state icon
             HStack(spacing: 2) {
                 ForEach(displays) { d in
-                    let isOnInScene = scene.state[String(d.id)] ?? false
+                    let isOnInScene = scene.targetEnabled(for: d) ?? false
                     RoundedRectangle(cornerRadius: 1)
                         .fill(isOnInScene ? Color.primary.opacity(isActive ? 1.0 : 0.7) : Color.clear)
                         .overlay(

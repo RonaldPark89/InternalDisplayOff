@@ -2,13 +2,24 @@
 set -e
 
 APP_NAME="InternalDisplayOff"
-BUILD_DIR="build"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+if [ -z "$SCRIPT_DIR" ]; then
+    echo "Unable to resolve the build script directory." >&2
+    exit 1
+fi
+cd -- "$SCRIPT_DIR"
+
+BUILD_DIR="$SCRIPT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 
 echo "🔨 Building $APP_NAME..."
 
 # Clean previous build
-rm -rf "$BUILD_DIR"
+if [ "$BUILD_DIR" != "$SCRIPT_DIR/build" ]; then
+    echo "Refusing to clean an unexpected build directory: $BUILD_DIR" >&2
+    exit 1
+fi
+rm -rf -- "$BUILD_DIR"
 
 # Create app bundle structure
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
@@ -40,8 +51,14 @@ swiftc \
     -framework ServiceManagement \
     -framework Combine \
     -framework IOKit \
+    -framework ColorSync \
     -O \
     -parse-as-library \
+    -swift-version 6 \
+    -strict-concurrency=complete \
+    -warnings-as-errors \
+    Sources/DisplayIdentity.swift \
+    Sources/DisplayAutomationPolicy.swift \
     Sources/BrightnessController.swift \
     Sources/DisplayManager.swift \
     Sources/SceneManager.swift \
@@ -77,8 +94,8 @@ echo "To run:"
 echo "  open $APP_BUNDLE"
 echo ""
 echo "To install (copy to Applications):"
-echo "  cp -r $APP_BUNDLE /Applications/"
+echo "  ditto '$APP_BUNDLE' '/Applications/$APP_NAME.app'"
 echo ""
-echo "⚠️  Note: You may need to grant Accessibility permissions"
-echo "   in System Settings → Privacy & Security → Accessibility"
-echo "   for the global keyboard shortcut (⌃⌘D) to work."
+echo "⚠️  Note: Accessibility is needed only for optional F1/F2 brightness-key rerouting."
+echo "   Grant it in System Settings → Privacy & Security → Accessibility."
+echo "   The ⌃⌘D shortcut does not require it."
