@@ -963,6 +963,19 @@ final class DisplayManager: ObservableObject {
     }
 
     func toggleInternalDisplay() {
+        // ⌃⌘D is a Carbon hotkey, so it still arrives on a machine that is showing
+        // nothing at all — which makes it the last escape hatch its user has, and
+        // one they are pressing blind. Do not consult isInternalDisplayOff there:
+        // if the flag is out of sync the toggle takes the disable path, finds no
+        // external display, and does nothing. Pressing it again does nothing in
+        // exactly the same way, which from the outside is indistinguishable from a
+        // dead machine and sends someone reaching for the power button.
+        if visibleExternalDisplayCount() == 0,
+           !onlineDisplayIDs().contains(where: { CGDisplayIsBuiltin($0) != 0 }) {
+            logger.notice("Toggle pressed with nothing on screen; forcing the internal display on.")
+            forceEnableFromBackup(ignoringCachedState: true)
+            return
+        }
         isInternalDisplayOff ? enableInternalDisplay() : disableInternalDisplay()
     }
 
