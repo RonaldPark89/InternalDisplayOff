@@ -307,7 +307,9 @@ final class DisplayManager: ObservableObject {
         fallbackTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
             Task { @MainActor in
                 let manager = DisplayManager.shared
-                guard manager.isInternalDisplayOff || manager.externalDisplayCount == 0 else { return }
+                // Deliberately unguarded. Any precondition here is drawn from the
+                // very state that is unreliable in the situation this exists to
+                // catch, and performEmergencyCheck() is two display-list reads.
                 manager.performEmergencyCheck()
             }
         }
@@ -346,12 +348,90 @@ final class DisplayManager: ObservableObject {
             }
         }
 
+        // Display sleep is not system sleep, and it is the more dangerous of the
+        // two: the Mac stays awake, so none of the sleep handlers above ever run,
+        // while macOS still defers display hotplug events until the screens wake.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleScreensDidSleep()
+            }
+        }
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleScreensDidWake()
+            }
+        }
+
         CGDisplayRegisterReconfigurationCallback(displayReconfigurationCallBack, nil)
     }
 
+    private func handleScreensDidSleep() {
+        // While the screens are asleep macOS defers display hotplug events
+        // ("Deferred hotplugs cannot be processed in a non-wake state"), so an
+        // external display unplugged now keeps showing up in CGGetOnlineDisplayList
+        // and NSScreen.screens. Every safety net here reads those lists, so all of
+        // them are blind for as long as the deferral lasts — and when the event
+        // finally replays at wake there is no enabled display left to draw on.
+        // That is the black screen that can only be escaped with a power cycle.
+        //
+        // Restoring the internal display *here* does not work, measured both ways:
+        // a configuration that lands after the panels are down blocks for ten
+        // seconds and fails, and one that lands a moment earlier succeeds but
+        // cancels the display sleep outright, so the screens can never stay off
+        // while an external display is attached.
+        //
+        // So only record the intent. The recovery has to happen at wake, which is
+        // the first moment the window server will accept a topology change again.
+        guard isInternalDisplayOff else { return }
+        wasInternalDisplayOffBeforeSleep = true
+        logger.notice("Screens going to sleep with the internal display disabled; arming wake recovery.")
+    }
+
+    private func handleScreensDidWake() {
+        logger.notice("Screens woke. wasInternalDisplayOffBeforeSleep: \(self.wasInternalDisplayOffBeforeSleep)")
+
+        // Hotplugs deferred during the sleep replay around now, so the display list
+        // is not trustworthy yet. Check for a screenless session straight away, then
+        // let things settle before re-applying anything.
+        performEmergencyCheck()
+
+        guard wasInternalDisplayOffBeforeSleep else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self, self.wasInternalDisplayOffBeforeSleep else { return }
+            self.wasInternalDisplayOffBeforeSleep = false
+            self.refreshDisplayInfo {
+                guard DisplayAutomationPolicy.shouldRestoreAfterWake(
+                    wasInternalDisplayOffBeforeSleep: true,
+                    // The stricter, NSScreen-backed count on purpose: an external
+                    // unplugged during the sleep can linger in the display list, and
+                    // re-disabling the internal display on the strength of a phantom
+                    // recreates exactly the screenless state this guards against.
+                    externalDisplayCount: self.visibleExternalDisplayCount()
+                ) else {
+                    logger.notice("Screens woke: no external display, leaving the internal display on.")
+                    self.forceEnableFromBackup()
+                    return
+                }
+                logger.notice("Screens woke: re-applying the internal display off setting.")
+                self.disableInternalDisplay()
+            }
+        }
+    }
+
     private func handleWillSleep() {
-        wasInternalDisplayOffBeforeSleep = isInternalDisplayOff
-        logger.info("System will sleep. wasInternalDisplayOffBeforeSleep: \(self.wasInternalDisplayOffBeforeSleep)")
+        // The screens almost always sleep before the system does, and
+        // handleScreensDidSleep() has already restored the internal display by then.
+        // Reading isInternalDisplayOff alone here would see the restored state and
+        // silently drop the user's setting, so keep whatever intent is recorded.
+        wasInternalDisplayOffBeforeSleep = isInternalDisplayOff || wasInternalDisplayOffBeforeSleep
+        logger.notice("System will sleep. wasInternalDisplayOffBeforeSleep: \(self.wasInternalDisplayOffBeforeSleep)")
 
         // The external display is often unplugged while the Mac is asleep (closing
         // the lid at a desk, waking it elsewhere). A disabled internal display would
@@ -363,12 +443,12 @@ final class DisplayManager: ObservableObject {
         // handleWakeFromSleep() re-disables it when an external display is still
         // attached after wake.
         guard wasInternalDisplayOffBeforeSleep else { return }
-        logger.info("Restoring internal display before sleep so wake can never be screenless.")
+        logger.notice("Restoring internal display before sleep so wake can never be screenless.")
         forceEnableFromBackup()
     }
 
     private func handleWakeFromSleep() {
-        logger.info("Wake from sleep: wasInternalDisplayOffBeforeSleep=\(self.wasInternalDisplayOffBeforeSleep), isInternalDisplayOff=\(self.isInternalDisplayOff)")
+        logger.notice("Wake from sleep: wasInternalDisplayOffBeforeSleep=\(self.wasInternalDisplayOffBeforeSleep), isInternalDisplayOff=\(self.isInternalDisplayOff)")
 
         // 1. Immediately check if external displays were disconnected while asleep.
         // If no external displays are connected, restore the internal display immediately
@@ -377,7 +457,7 @@ final class DisplayManager: ObservableObject {
         refreshDisplayInfo { [weak self] in
             guard let self else { return }
             if self.externalDisplayCount == 0 && (self.isInternalDisplayOff || self.wasInternalDisplayOffBeforeSleep) {
-                logger.info("Wake from sleep: no external displays connected, restoring internal display immediately.")
+                logger.notice("Wake from sleep: no external displays connected, restoring internal display immediately.")
                 self.wasInternalDisplayOffBeforeSleep = false
                 self.forceEnableFromBackup()
             }
@@ -394,7 +474,7 @@ final class DisplayManager: ObservableObject {
             self.wasInternalDisplayOffBeforeSleep = false
             self.refreshDisplayInfo {
                 if self.externalDisplayCount == 0 {
-                    logger.info("Wake from sleep (settled): no external display, restoring internal display.")
+                    logger.notice("Wake from sleep (settled): no external display, restoring internal display.")
                     self.forceEnableFromBackup()
                 } else if DisplayAutomationPolicy.shouldRestoreAfterWake(
                     wasInternalDisplayOffBeforeSleep: true,
@@ -404,7 +484,7 @@ final class DisplayManager: ObservableObject {
                     // strength of a phantom is exactly the screenless state to avoid.
                     externalDisplayCount: self.visibleExternalDisplayCount()
                 ) {
-                    logger.info("Wake from sleep: re-applying internal display off setting.")
+                    logger.notice("Wake from sleep: re-applying internal display off setting.")
                     self.disableInternalDisplay()
                 }
             }
@@ -418,7 +498,7 @@ final class DisplayManager: ObservableObject {
     }
 
     func handleHardwareDisplayChange() {
-        logger.info("Hardware display reconfiguration detected.")
+        logger.notice("Hardware display reconfiguration detected.")
         Task { await BrightnessController.shared.invalidateCache() }
         restorePersistedExternalDisplays()
         let snapshot = lastHardwareExternalCount
@@ -455,7 +535,7 @@ final class DisplayManager: ObservableObject {
                     logger.info("Auto mode: conditions changed, skipping disable.")
                     return
                 }
-                logger.info("Auto mode: disabling internal display.")
+                logger.notice("Auto mode: disabling internal display.")
                 self.disableInternalDisplay()
             }
         }
@@ -467,6 +547,33 @@ final class DisplayManager: ObservableObject {
     }
 
     // MARK: - Helpers
+
+    /// Whether an online display is a placeholder rather than a panel anyone can see.
+    ///
+    /// When the last real display goes away, macOS keeps the session alive with a
+    /// substitute rather than leaving it headless. That substitute is online,
+    /// active, present in NSScreen.screens and named "(AirPlay)" — and it lights
+    /// nothing at all. Counting it as an external display is what let a Mac with a
+    /// black screen look perfectly healthy from in here: on wake the app saw "an
+    /// external display is still attached", re-applied the internal display off
+    /// setting, and left the machine dark.
+    ///
+    /// The name is the only property measured to be reliable. The placeholder
+    /// inherits the vendor and model numbers of the display it replaced, and its
+    /// reported physical size was observed changing from 0 x 0 mm to a fabricated
+    /// 1354 x 571 mm within twelve seconds, so neither identifies it. Size is still
+    /// consulted as a secondary signal, since it costs nothing and covers a
+    /// placeholder that has not yet appeared in NSScreen.screens.
+    private func placeholderReason(_ displayID: CGDirectDisplayID) -> String? {
+        guard CGDisplayIsBuiltin(displayID) == 0 else { return nil }
+        let name = NSScreen.screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
+        }?.localizedName
+        if let name, name.localizedCaseInsensitiveContains("airplay") { return "name" }
+        let size = CGDisplayScreenSize(displayID)
+        if size.width <= 0 || size.height <= 0 { return "no physical size" }
+        return nil
+    }
 
     private func sizeInInches(_ displayID: CGDirectDisplayID) -> Double {
         let size = CGDisplayScreenSize(displayID)
@@ -694,6 +801,10 @@ final class DisplayManager: ObservableObject {
                 logger.debug("Ignoring ghost display: ID=\(displayID)")
                 continue
             }
+            if let reason = placeholderReason(displayID) {
+                logger.notice("Ignoring placeholder display \(displayID) (\(reason, privacy: .public)); it lights nothing.")
+                continue
+            }
 
             if isBuiltin { foundInternalID = displayID }
 
@@ -721,6 +832,10 @@ final class DisplayManager: ObservableObject {
         // ground truth: SLSConfigureDisplayEnabled(0) removes a display from it.
         for displayID in onlineDisplayIDs() where !seenIDs.contains(displayID) {
             seenIDs.insert(displayID)
+            if let reason = placeholderReason(displayID) {
+                logger.notice("Ignoring placeholder display \(displayID) (\(reason, privacy: .public)); it lights nothing.")
+                continue
+            }
             let isBuiltin = CGDisplayIsBuiltin(displayID) != 0
             if isBuiltin { foundInternalID = displayID }
 
@@ -869,6 +984,15 @@ final class DisplayManager: ObservableObject {
             return
         }
 
+        // Already disabled: configuring a display into the state it is already in
+        // fails the transaction with error 1001, so resync instead of erroring.
+        guard onlineDisplayIDs().contains(displayID) else {
+            logger.notice("Internal display \(displayID) is already disabled; resyncing state.")
+            isInternalDisplayOff = true
+            lastError = nil
+            return
+        }
+
         // Always rebuild the cache entry from the freshest source so that the spatial
         // map thumbnail has correct frame/size data after disabling.
         // Prefer a live NSScreen lookup, then the displays array, then a zero fallback.
@@ -904,7 +1028,7 @@ final class DisplayManager: ObservableObject {
         }
         disabledDisplayCache[displayID] = cacheState
 
-        logger.info("Disabling internal display \(displayID)")
+        logger.notice("Disabling internal display \(displayID)")
         var configRef: CGDisplayConfigRef?
         var result = CGBeginDisplayConfiguration(&configRef)
         if result == .success {
@@ -942,7 +1066,7 @@ final class DisplayManager: ObservableObject {
         // Already enabled (e.g. mirroring, or the flag went stale across a reboot):
         // enabling it again fails the configuration transaction, so just resync.
         if onlineDisplayIDs().contains(displayID) {
-            logger.info("Internal display \(displayID) is already enabled; resyncing state.")
+            logger.notice("Internal display \(displayID) is already enabled; resyncing state.")
             disabledDisplayCache.removeValue(forKey: displayID)
             isInternalDisplayOff = false
             lastError = nil
@@ -950,7 +1074,7 @@ final class DisplayManager: ObservableObject {
             return
         }
 
-        logger.info("Enabling internal display \(displayID)")
+        logger.notice("Enabling internal display \(displayID)")
         var configRef: CGDisplayConfigRef?
         var result = CGBeginDisplayConfiguration(&configRef)
         if result == .success {
@@ -976,10 +1100,13 @@ final class DisplayManager: ObservableObject {
     }
 
     @discardableResult
-    func forceEnableFromBackup() -> Bool {
+    func forceEnableFromBackup(ignoringCachedState: Bool = false) -> Bool {
         // Online, not NSScreen: a mirroring built-in display is enabled but hidden
-        // from NSScreen.screens, and needs no recovery.
-        if !isInternalDisplayOff,
+        // from NSScreen.screens, and needs no recovery. Skipped for a forced
+        // recovery, where both that flag and the online list have already been
+        // contradicted by the session having nothing to draw on.
+        if !ignoringCachedState,
+           !isInternalDisplayOff,
            onlineDisplayIDs().contains(where: { CGDisplayIsBuiltin($0) != 0 }) {
             return true
         }
@@ -994,7 +1121,7 @@ final class DisplayManager: ObservableObject {
             return false
         }
 
-        logger.info("Forcing enable of internal display \(displayID)")
+        logger.notice("Forcing enable of internal display \(displayID)")
         var configRef: CGDisplayConfigRef?
         var result = CGBeginDisplayConfiguration(&configRef)
         if result == .success {
@@ -1007,9 +1134,10 @@ final class DisplayManager: ObservableObject {
         }
 
         guard result == .success else {
-            let message = "Failed to restore internal display (Error: \(result.rawValue))"
-            lastError = message
-            logger.error("\(message)")
+            // Log the code, not the string: os_log redacts interpolated Strings by
+            // default, so the message that matters most here rendered as <private>.
+            logger.error("Failed to restore internal display. CGError: \(result.rawValue)")
+            lastError = "Failed to restore internal display (Error: \(result.rawValue))"
             return false
         }
 
@@ -1058,12 +1186,14 @@ final class DisplayManager: ObservableObject {
                 seenIDs.insert(id)
                 if CGDisplayIsBuiltin(id) == 0 {
                     let name = screen.localizedName.trimmingCharacters(in: .whitespaces)
-                    if !name.isEmpty { validExternals += 1 }
+                    if !name.isEmpty, placeholderReason(id) == nil { validExternals += 1 }
                 }
             }
         }
         for id in onlineDisplayIDs() where !seenIDs.contains(id) {
-            if CGDisplayIsBuiltin(id) == 0, CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay {
+            if CGDisplayIsBuiltin(id) == 0,
+               CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay,
+               placeholderReason(id) == nil {
                 validExternals += 1
             }
         }
@@ -1071,22 +1201,35 @@ final class DisplayManager: ObservableObject {
     }
 
     private func performEmergencyCheck() {
-        let validExternals = visibleExternalDisplayCount()
-        guard validExternals == 0,
-              isInternalDisplayOff || wasInternalDisplayOffBeforeSleep else { return }
+        let visibleExternals = visibleExternalDisplayCount()
+        let onlineIDs = onlineDisplayIDs()
+        let builtinOnline = onlineIDs.contains { CGDisplayIsBuiltin($0) != 0 }
 
-        // Nothing to recover when the internal display is already enabled — the
-        // normal state after handleWillSleep() restored it ahead of a sleep. Just
-        // resync the flag instead of reporting a restore that did not happen.
-        guard !onlineDisplayIDs().contains(where: { CGDisplayIsBuiltin($0) != 0 }) else {
-            if isInternalDisplayOff { isInternalDisplayOff = false }
+        // The condition is read entirely from the display lists, never from
+        // isInternalDisplayOff or wasInternalDisplayOffBeforeSleep. Those are this
+        // app's own bookkeeping, and a session can end up with nothing to draw on
+        // while they both say everything is fine — which is precisely the moment
+        // this check must still fire. Requiring them to agree first is how a
+        // recovery path quietly disarms itself in the only state that matters.
+        guard visibleExternals == 0, !builtinOnline else {
+            // Reality disagrees with the flag: the built-in display is part of the
+            // desktop again. Resync so the UI and the wake path follow.
+            if builtinOnline, isInternalDisplayOff, pendingDisabledIDs.isEmpty {
+                isInternalDisplayOff = false
+            }
             return
         }
+        // One of our own transactions is mid-flight; that is not this failure.
+        guard pendingDisabledIDs.isEmpty else { return }
 
-        logger.warning("Emergency check: no external displays. Restoring internal display.")
-        if forceEnableFromBackup() {
+        logger.error("No drawable display left in this session. Restoring the internal display.")
+        if forceEnableFromBackup(ignoringCachedState: true) {
             wasInternalDisplayOffBeforeSleep = false
             ToastManager.shared.showToast(message: "Internal Display Restored")
         }
+        // A failed attempt leaves every flag as it was, so the next timer tick
+        // retries. The configuration can be refused while the window server is
+        // still settling after a wake, and refusing to give up is the difference
+        // between a few black seconds and a power cycle.
     }
 }
