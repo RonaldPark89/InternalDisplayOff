@@ -3,9 +3,10 @@ import SwiftUI
 import Carbon
 import Combine
 import OSLog
-class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
+    private var mainWindow: NSWindow?
     private let displayManager = DisplayManager.shared
     private var cancellables = Set<AnyCancellable>()
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "InternalDisplayOff", category: "AppDelegate")
@@ -33,6 +34,63 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         setupGlobalHotKey()
+
+        // Observe setting changes so enabling "Reroute Brightness Keys" after
+        // launch can install the tap without prompting or relaunching.
+        NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.setupBrightnessKeyMonitor()
+        }
+
+        // A normal launch (Finder, Launchpad, `open`) should show the app's
+        // window. Login-item launches stay quiet in the menu bar.
+        let isDefaultLaunch = (notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool) ?? true
+        if isDefaultLaunch {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.presentMainWindow()
+            }
+        }
+    }
+
+    // Reopening the app (Finder/Launchpad while it is already running) should
+    // bring the window back instead of doing nothing.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        presentMainWindow()
+        return true
+    }
+
+    private func presentMainWindow() {
+        if mainWindow == nil {
+            let contentView = PopoverView(
+                displayManager: displayManager,
+                sceneManager: SceneManager.shared,
+                onQuit: { NSApp.terminate(nil) }
+            )
+            let hostingController = NSHostingController(rootView: contentView)
+            hostingController.sizingOptions = .preferredContentSize
+
+            let window = NSWindow(contentViewController: hostingController)
+            window.title = "Internal Display Off"
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            mainWindow = window
+        }
+
+        // Show a Dock icon while the window is visible so this is a normal app
+        // window, not only a menu bar accessory.
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        mainWindow?.makeKeyAndOrderFront(nil)
+        mainWindow?.orderFrontRegardless()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow else { return }
+        NSApp.setActivationPolicy(.accessory)
     }
 
     private func setupGlobalHotKey() {
@@ -65,42 +123,52 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         setupBrightnessKeyMonitor()
     }
 
-    private func setupBrightnessKeyMonitor() {
-        // IOHIDManager receives raw Consumer Control HID events directly from the keyboard
-        // driver — before the OS routes them to CoreBrightness. This works even when the
-        // internal display is off (where CGEventTap and NSEvent monitors don't receive events).
-        //
-        // kHIDPage_Consumer = 0x0C
-        // kHIDUsage_Csmr_BrightnessDecrement = 0x6F  (F1 / 🔅)
-        // kHIDUsage_Csmr_BrightnessIncrement = 0x70  (F2 / 🔆)
+    private var brightnessTapRetryTimer: Timer?
 
-        // IOHIDRequestAccess triggers the Input Monitoring TCC permission prompt.
-        // IOHIDManagerOpen alone does NOT show the prompt — the explicit request is required.
-        // IOHIDRequestAccess blocks until the user responds. For LSUIElement (menu-bar-only)
-        // apps the TCC dialog may not appear, so we call it on a background thread and
-        // schedule a re-try that installs the manager once access is granted.
-        // CGEventTap at the HID level receives NX_SYSDEFINED (media key) events.
-        // On macOS 15+, this requires Accessibility permission. Compared to IOHIDManager
-        // (which needs Input Monitoring), Accessibility is obtainable for self-signed apps.
-        let trusted = AXIsProcessTrustedWithOptions(
-            [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        )
-        guard trusted else {
-            logger.warning("Accessibility not granted — brightness key rerouting requires Accessibility permission")
+    private func setupBrightnessKeyMonitor() {
+        // Only touch Accessibility when the user has actually enabled this feature.
+        // Never call the prompting AX API: macOS now shows that dialog on every
+        // launch for ad-hoc signed builds, which is noisy and unnecessary.
+        guard UserDefaults.standard.bool(forKey: "RerouteBrightnessKeys") else {
+            brightnessTapRetryTimer?.invalidate()
+            brightnessTapRetryTimer = nil
             return
         }
 
+        guard AXIsProcessTrusted() else {
+            logger.warning("Accessibility not granted — brightness key rerouting requires Accessibility permission")
+            scheduleBrightnessTapRetry()
+            return
+        }
+        installBrightnessEventTap()
+    }
+
+    private func installBrightnessEventTap() {
+        guard eventTap == nil else { return }
+
         // NX_SYSDEFINED = 14; matches NSEvent.EventType.systemDefined media-key events.
         let eventMask = CGEventMask(1 << 14)
-        let callback: CGEventTapCallBack = { _, type, event, _ in
-            guard type.rawValue == 14 else { return Unmanaged.passRetained(event) }
+        let callback: CGEventTapCallBack = { _, type, event, userInfo in
+            // macOS disables a tap if the callback is too slow (or on user input).
+            // Re-arm it instead of silently losing brightness-key handling.
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let userInfo {
+                    let appDelegate = Unmanaged<AppDelegate>.fromOpaque(userInfo).takeUnretainedValue()
+                    if let tap = appDelegate.eventTap {
+                        CGEvent.tapEnable(tap: tap, enable: true)
+                    }
+                }
+                return Unmanaged.passUnretained(event)
+            }
+
+            guard type.rawValue == 14 else { return Unmanaged.passUnretained(event) }
             let nsEvent = NSEvent(cgEvent: event)
             // NX_SUBTYPE_AUX_CONTROL_BUTTONS = 8 (media key subtype)
             guard nsEvent?.subtype.rawValue == 8,
                   nsEvent?.data2 != 0,
                   UserDefaults.standard.bool(forKey: "RerouteBrightnessKeys"),
                   DisplayManager.shared.isInternalDisplayOff else {
-                return Unmanaged.passRetained(event)
+                return Unmanaged.passUnretained(event)
             }
 
             let keyCode = Int((nsEvent?.data1 ?? 0) >> 16) & 0xFF
@@ -112,7 +180,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     BrightnessController.shared.adjustAllExternalBrightness(increase: increase)
                 }
             }
-            return Unmanaged.passRetained(event)
+            // Listen-only tap: never retain the event, or every media keypress leaks.
+            return Unmanaged.passUnretained(event)
         }
 
         // kCGHIDEventTap=0, kCGHeadInsertEventTap=0, kCGEventTapOptionListenOnly=1
@@ -122,9 +191,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             options: CGEventTapOptions(rawValue: 1)!,
             eventsOfInterest: eventMask,
             callback: callback,
-            userInfo: nil
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
             logger.warning("CGEventTap creation failed — brightness key rerouting unavailable")
+            scheduleBrightnessTapRetry()
             return
         }
 
@@ -133,7 +203,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         CGEvent.tapEnable(tap: tap, enable: true)
         eventTap = tap
         tapRunLoopSource = src
+        brightnessTapRetryTimer?.invalidate()
+        brightnessTapRetryTimer = nil
         logger.info("CGEventTap installed for F1/F2 brightness key monitoring")
+    }
+
+    private func scheduleBrightnessTapRetry() {
+        guard brightnessTapRetryTimer == nil else { return }
+        // Re-check so granting Accessibility in System Settings takes effect
+        // without relaunching the app. AXIsProcessTrusted() does not re-prompt.
+        brightnessTapRetryTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            guard let self, AXIsProcessTrusted() else { return }
+            self.brightnessTapRetryTimer?.invalidate()
+            self.brightnessTapRetryTimer = nil
+            self.installBrightnessEventTap()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -144,6 +228,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let ref = carbonEventHandlerRef { RemoveEventHandler(ref) }
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let src = tapRunLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes) }
+        brightnessTapRetryTimer?.invalidate()
+        brightnessTapRetryTimer = nil
     }
 
     // MARK: - Status Bar
