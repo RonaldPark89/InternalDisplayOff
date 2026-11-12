@@ -60,7 +60,10 @@ class DisplayManager: ObservableObject {
     static let shared = DisplayManager()
 
     @Published var isInternalDisplayOff = UserDefaults.standard.bool(forKey: "IsInternalDisplayOff") {
-        didSet { UserDefaults.standard.set(isInternalDisplayOff, forKey: "IsInternalDisplayOff") }
+        didSet {
+            UserDefaults.standard.set(isInternalDisplayOff, forKey: "IsInternalDisplayOff")
+            internalDisplayDisabledAt = isInternalDisplayOff ? Date() : nil
+        }
     }
     @Published var autoMode = UserDefaults.standard.bool(forKey: "AutoMode") {
         didSet { UserDefaults.standard.set(autoMode, forKey: "AutoMode") }
@@ -85,6 +88,16 @@ class DisplayManager: ObservableObject {
     // the "off" flag, otherwise every safety net is disarmed.
     private var restoreAttempts = 0
     private var restoreRetryScheduled = false
+    // When the built-in is disabled, some monitors briefly drop off the display
+    // list while the WindowServer reconfigures. Do not treat that as "external
+    // unplugged" until the reconfiguration has had time to settle.
+    private var internalDisplayDisabledAt: Date?
+    private let internalDisableSettleGrace: TimeInterval = 8.0
+    private var pendingReDisableScheduled = false
+    private var isInternalDisableSettling: Bool {
+        guard let disabledAt = internalDisplayDisabledAt else { return false }
+        return Date().timeIntervalSince(disabledAt) < internalDisableSettleGrace
+    }
 
     private var backupFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".internal_display_backup_id")
@@ -113,7 +126,6 @@ class DisplayManager: ObservableObject {
     private func restorePersistedExternalDisplays() {
         guard let ids = UserDefaults.standard.array(forKey: disabledExternalIDsKey) as? [Int],
               !ids.isEmpty else { return }
-        guard let configEnabled = PrivateAPI.ConfigureDisplayEnabled else { return }
 
         logger.info("Restoring \(ids.count) persisted disabled external display(s) from previous session.")
 
@@ -123,16 +135,7 @@ class DisplayManager: ObservableObject {
         var stillDisabled: [Int] = []
         for idInt in ids {
             let displayID = CGDirectDisplayID(idInt)
-            var configRef: CGDisplayConfigRef?
-            var result = CGBeginDisplayConfiguration(&configRef)
-            if result == .success {
-                result = configEnabled(configRef, displayID, 1)
-                if result == .success {
-                    result = CGCompleteDisplayConfiguration(configRef, .forSession)
-                } else {
-                    CGCancelDisplayConfiguration(configRef)
-                }
-            }
+            let result = applyDisplayChanges([(displayID, true)])
             if result != .success {
                 stillDisabled.append(idInt)
                 logger.error("Failed to restore persisted external display \(displayID) (CGError \(result.rawValue)).")
@@ -270,13 +273,21 @@ class DisplayManager: ObservableObject {
     /// while the WindowServer settles the newly connected monitor.
     private func schedulePendingReDisable(after delay: TimeInterval = 2.0, attempt: Int = 0) {
         guard pendingInternalReDisable else { return }
+        // Display-list churn fires many refresh/reconfiguration callbacks. Coalesce
+        // them into one pending disable; otherwise a replug can issue several
+        // configuration transactions at once and knock both panels out.
+        guard !pendingReDisableScheduled else { return }
         guard attempt < 5 else {
             logger.error("Could not re-apply remembered internal display off state.")
             return
         }
 
+        pendingReDisableScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.pendingInternalReDisable, !self.isInternalDisplayOff else { return }
+            guard let self else { return }
+            self.pendingReDisableScheduled = false
+
+            guard self.pendingInternalReDisable, !self.isInternalDisplayOff else { return }
             guard self.externalDisplayCount > 0 else { return }
 
             logger.info("External display available: re-applying remembered internal display off state.")
@@ -351,8 +362,6 @@ class DisplayManager: ObservableObject {
 
     // Applies multiple enable/disable changes in one display configuration session.
     private func configureDisplays(_ changes: [(CGDirectDisplayID, Bool)]) -> CGError {
-        guard let configEnabled = PrivateAPI.ConfigureDisplayEnabled else { return .failure }
-
         // macOS fires one reconfiguration event per disabled display, not one per
         // transaction. Without tracking, refreshDisplayInfo() sees a display that is
         // "still in NSScreen.screens" during an intermediate event and evicts it from
@@ -361,22 +370,8 @@ class DisplayManager: ObservableObject {
         let disablingIDs = changes.filter { !$0.1 }.map { $0.0 }
         pendingDisabledIDs.formUnion(disablingIDs)
 
-        var configRef: CGDisplayConfigRef?
-        var result = CGBeginDisplayConfiguration(&configRef)
+        let result = applyDisplayChanges(changes)
         guard result == .success else {
-            pendingDisabledIDs.subtract(disablingIDs)
-            return result
-        }
-        for (id, enabled) in changes {
-            result = configEnabled(configRef, id, enabled ? 1 : 0)
-            if result != .success {
-                CGCancelDisplayConfiguration(configRef)
-                pendingDisabledIDs.subtract(disablingIDs)
-                return result
-            }
-        }
-        result = CGCompleteDisplayConfiguration(configRef, .forSession)
-        if result != .success {
             pendingDisabledIDs.subtract(disablingIDs)
             return result
         }
@@ -388,6 +383,44 @@ class DisplayManager: ObservableObject {
         }
 
         return result
+    }
+
+    /// Applies display changes in one transaction and verifies that the requested
+    /// state actually took effect. `CGCompleteDisplayConfiguration` can return
+    /// `kCGErrorIllegalArgument` (1001) even when the change succeeded — notably
+    /// when enabling an already-enabled display, and with some monitors during a
+    /// reconfiguration — so the observed display state is the source of truth.
+    private func applyDisplayChanges(_ changes: [(CGDirectDisplayID, Bool)]) -> CGError {
+        guard let configEnabled = PrivateAPI.ConfigureDisplayEnabled else { return .failure }
+
+        var configRef: CGDisplayConfigRef?
+        var result = CGBeginDisplayConfiguration(&configRef)
+        guard result == .success else { return result }
+
+        for (id, enabled) in changes {
+            result = configEnabled(configRef, id, enabled ? 1 : 0)
+            if result != .success {
+                CGCancelDisplayConfiguration(configRef)
+                return result
+            }
+        }
+
+        result = CGCompleteDisplayConfiguration(configRef, .forSession)
+        if result == .success { return .success }
+
+        // Treat the transaction as successful when the display list already
+        // matches the requested state. Give the WindowServer a moment to finish
+        // the reconfiguration before deciding it really failed.
+        if configurationMatches(changes) { return .success }
+        usleep(250_000)
+        if configurationMatches(changes) { return .success }
+        return result
+    }
+
+    private func configurationMatches(_ changes: [(CGDirectDisplayID, Bool)]) -> Bool {
+        changes.allSatisfy { (id, enabled) in
+            (CGDisplayIsActive(id) != 0) == enabled
+        }
     }
 
     // MARK: - Multi-Display Operations
@@ -461,7 +494,7 @@ class DisplayManager: ObservableObject {
             // Solo on an external means the built-in should stay off when that
             // monitor is unplugged and plugged back in.
             pendingInternalReDisable = !isInternal
-            DispatchQueue.main.async { self.isInternalDisplayOff = !isInternal }
+            updateInternalDisplayOff(!isInternal)
             let name = displays.first(where: { $0.id == id })?.name ?? "Display"
             ToastManager.shared.showToast(message: "Only \(name) on")
         } else {
@@ -487,7 +520,7 @@ class DisplayManager: ObservableObject {
         let result = configureDisplays(disabled.map { ($0.id, true) })
 
         if result == .success {
-            DispatchQueue.main.async { self.isInternalDisplayOff = false }
+            updateInternalDisplayOff(false)
             ToastManager.shared.showToast(message: "All displays on")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.refreshDisplayInfo() }
         } else {
@@ -528,7 +561,7 @@ class DisplayManager: ObservableObject {
         if result == .success {
             if let internal_ = displays.first(where: { $0.isBuiltin }),
                let targetEnabled = state[String(internal_.id)] {
-                DispatchQueue.main.async { self.isInternalDisplayOff = !targetEnabled }
+                updateInternalDisplayOff(!targetEnabled)
             }
             ToastManager.shared.showToast(message: "Applied: \(sceneName)")
             let hasEnables = changes.contains { $0.1 }
@@ -633,9 +666,7 @@ class DisplayManager: ObservableObject {
             }
 
             if self.isInternalDisplayOff && validExternals == 0 {
-                logger.warning("Emergency: internal off, no external displays. Restoring.")
-                ToastManager.shared.showToast(message: "Internal Display Restored")
-                self.forceEnableFromBackup()
+                self.performEmergencyCheck()
             }
 
             // Safety net: if we believe the internal display is disabled but it has
@@ -694,10 +725,6 @@ class DisplayManager: ObservableObject {
             lastError = "Could not find internal display ID."
             return
         }
-        guard let configEnabled = PrivateAPI.ConfigureDisplayEnabled else {
-            lastError = "Private API (SkyLight) not found."
-            return
-        }
 
         // Always rebuild the cache entry from the freshest source so that the spatial
         // map thumbnail has correct frame/size data after disabling.
@@ -726,23 +753,12 @@ class DisplayManager: ObservableObject {
         disabledDisplayCache[displayID] = cacheState
 
         logger.info("Disabling internal display \(displayID)")
-        var configRef: CGDisplayConfigRef?
-        var result = CGBeginDisplayConfiguration(&configRef)
-        if result == .success {
-            result = configEnabled(configRef, displayID, 0)
-            if result == .success {
-                result = CGCompleteDisplayConfiguration(configRef, .forSession)
-            } else {
-                CGCancelDisplayConfiguration(configRef)
-            }
-        }
+        let result = applyDisplayChanges([(displayID, false)])
 
         if result == .success {
             pendingInternalReDisable = true
-            DispatchQueue.main.async {
-                self.isInternalDisplayOff = true
-                self.lastError = nil
-            }
+            updateInternalDisplayOff(true)
+            lastError = nil
             ToastManager.shared.showToast(message: "Internal Display Disabled")
         } else {
             disabledDisplayCache.removeValue(forKey: displayID)
@@ -761,29 +777,14 @@ class DisplayManager: ObservableObject {
             lastError = "Internal display ID lost."
             return
         }
-        guard let configEnabled = PrivateAPI.ConfigureDisplayEnabled else {
-            lastError = "Private API not found."
-            return
-        }
 
         logger.info("Enabling internal display \(displayID)")
-        var configRef: CGDisplayConfigRef?
-        var result = CGBeginDisplayConfiguration(&configRef)
-        if result == .success {
-            result = configEnabled(configRef, displayID, 1)
-            if result == .success {
-                result = CGCompleteDisplayConfiguration(configRef, .forSession)
-            } else {
-                CGCancelDisplayConfiguration(configRef)
-            }
-        }
+        let result = applyDisplayChanges([(displayID, true)])
 
         if result == .success {
             disabledDisplayCache.removeValue(forKey: displayID)
-            DispatchQueue.main.async {
-                self.isInternalDisplayOff = false
-                self.lastError = nil
-            }
+            updateInternalDisplayOff(false)
+            lastError = nil
             ToastManager.shared.showToast(message: "Internal Display Enabled")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.refreshDisplayInfo() }
         } else {
@@ -807,10 +808,6 @@ class DisplayManager: ObservableObject {
             logger.error("No backed-up internal display ID to restore.")
             return false
         }
-        guard let configEnabled = PrivateAPI.ConfigureDisplayEnabled else {
-            logger.error("Private API not found during forced restore.")
-            return false
-        }
 
         if preserveIntent && isInternalDisplayOff {
             // The built-in is being restored because the last external went away.
@@ -818,16 +815,7 @@ class DisplayManager: ObservableObject {
             pendingInternalReDisable = true
         }
 
-        var configRef: CGDisplayConfigRef?
-        var result = CGBeginDisplayConfiguration(&configRef)
-        if result == .success {
-            result = configEnabled(configRef, displayID, 1)
-            if result == .success {
-                result = CGCompleteDisplayConfiguration(configRef, .forSession)
-            } else {
-                CGCancelDisplayConfiguration(configRef)
-            }
-        }
+        let result = applyDisplayChanges([(displayID, true)])
 
         guard result == .success else {
             restoreAttempts += 1
@@ -960,7 +948,7 @@ class DisplayManager: ObservableObject {
     /// soon as there is no usable external screen left.
     func scheduleEmergencyChecks() {
         emergencyHardwareCheck()
-        for delay in [0.5, 1.5, 3.0] {
+        for delay in [0.5, 1.5, 3.0, 9.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.performEmergencyCheck()
             }
@@ -981,6 +969,15 @@ class DisplayManager: ObservableObject {
 
     private func performEmergencyCheck() {
         guard isInternalDisplayOff else { return }
+
+        // A monitor that briefly drops off the display list while the built-in is
+        // being disabled is not an unplug. Wait for the reconfiguration to settle
+        // before restoring the built-in, otherwise slow-syncing monitors (some
+        // ultrawides) can end up with both panels dark.
+        if isInternalDisableSettling {
+            logger.info("Emergency check: waiting for displays to settle after disabling the built-in.")
+            return
+        }
 
         // Use the CoreGraphics active-display list instead of NSScreen: it is the
         // authoritative "is anything actually drawable?" source. An external that
